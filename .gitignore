@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+logs/
+backtest_equity.csv
+backtest_trades.csv
