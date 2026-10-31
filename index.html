@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CryptoBot Top 100 — Señales de Compra y Venta</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#131826; --panel2:#1a2136; --border:#232c45;
+    --txt:#e6ebf5; --mut:#8b95ad;
+    --green:#22c55e; --green-d:#14532d; --red:#ef4444; --red-d:#7f1d1d;
+    --amber:#f59e0b; --blue:#3b82f6; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',system-ui,-apple-system,sans-serif;padding:20px}
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-bottom:8px}
+  h1{font-size:1.5rem;font-weight:700}
+  h1 span{color:var(--green)}
+  .estado{margin-left:auto;color:var(--mut);font-size:.85rem;text-align:right}
+  .aviso{background:#2a1d06;border:1px solid #6b4e0d;color:#fbbf24;font-size:.8rem;
+         padding:8px 12px;border-radius:8px;margin:10px 0 18px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .tarjeta{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .tarjeta h2{font-size:1rem;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .pick{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;
+        background:var(--panel2);margin-bottom:8px;cursor:pointer;border:1px solid transparent;transition:.15s}
+  .pick:hover{border-color:var(--blue)}
+  .pick img{width:26px;height:26px;border-radius:50%}
+  .pick .nom{font-weight:600;font-size:.9rem}
+  .pick .sim{color:var(--mut);font-size:.75rem}
+  .pick .der{margin-left:auto;text-align:right}
+  .score{font-weight:700;font-size:.95rem}
+  .mini{font-size:.72rem;color:var(--mut)}
+  .badge{padding:3px 9px;border-radius:20px;font-size:.68rem;font-weight:700;white-space:nowrap}
+  .b-cf{background:var(--green);color:#04170a}
+  .b-c{background:var(--green-d);color:#86efac;border:1px solid var(--green)}
+  .b-m{background:#2b3040;color:#b9c2d8}
+  .b-v{background:var(--red-d);color:#fca5a5;border:1px solid var(--red)}
+  .b-vf{background:var(--red);color:#fff}
+  .b-s{background:#1e3a5f;color:#93c5fd}
+  .fase{padding:4px 11px;border-radius:20px;font-size:.72rem;font-weight:700;display:inline-block;margin:4px 0 2px}
+  .f-acu{background:#14532d;color:#86efac;border:1px solid var(--green)}
+  .f-dis{background:#7f1d1d;color:#fca5a5;border:1px solid var(--red)}
+  .f-up{background:#173a63;color:#93c5fd;border:1px solid var(--blue)}
+  .f-down{background:#3f1d47;color:#e9b3f5;border:1px solid var(--purple)}
+  .f-neu{background:#2b3040;color:#b9c2d8;border:1px solid var(--border)}
+  .controles{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center}
+  .controles input{background:var(--panel2);border:1px solid var(--border);color:var(--txt);
+                   padding:8px 12px;border-radius:8px;font-size:.85rem;width:220px;outline:none}
+  .fbtn{background:var(--panel2);border:1px solid var(--border);color:var(--mut);padding:7px 13px;
+        border-radius:8px;font-size:.8rem;cursor:pointer}
+  .fbtn.act{color:var(--txt);border-color:var(--blue);background:#16233f}
+  table{width:100%;border-collapse:collapse;font-size:.84rem}
+  th{color:var(--mut);font-size:.68rem;text-transform:uppercase;letter-spacing:.4px;text-align:right;
+     padding:8px 9px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap}
+  th:nth-child(1),th:nth-child(2){text-align:left}
+  td{padding:9px 9px;border-bottom:1px solid #1a2032;text-align:right;white-space:nowrap}
+  td:nth-child(1),td:nth-child(2){text-align:left}
+  tr.fila{cursor:pointer}
+  tr.fila:hover{background:#161c2c}
+  .cel-moneda{display:flex;align-items:center;gap:8px}
+  .cel-moneda img{width:20px;height:20px;border-radius:50%}
+  .verde{color:var(--green)} .rojo{color:var(--red)} .neut{color:var(--mut)} .ambar{color:var(--amber)}
+  .detalle{display:none;background:#101625}
+  .detalle>td{text-align:left;white-space:normal;padding:14px 16px}
+  .detalle ul{margin:6px 0 10px 18px;color:#c6cfe2;font-size:.82rem;line-height:1.55}
+  .cols-det{display:grid;grid-template-columns:1.2fr 1fr;gap:16px}
+  @media(max-width:900px){.cols-det{grid-template-columns:1fr}}
+  .niveles{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+  .nivel{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:.76rem;color:var(--mut)}
+  .nivel b{display:block;font-size:.88rem;margin-top:2px;color:var(--txt)}
+  .sr{margin-top:8px;font-size:.8rem}
+  .sr-fila{display:flex;align-items:center;gap:8px;padding:4px 0}
+  .sr-tag{width:88px;font-size:.7rem;color:var(--mut)}
+  .sr-precio{font-weight:600;width:110px}
+  .sr-barra{flex:1;height:7px;background:#2b3040;border-radius:4px;overflow:hidden}
+  .sr-barra i{display:block;height:100%;border-radius:4px}
+  .sr-dist{font-size:.72rem;color:var(--mut);width:112px;text-align:right}
+  .barra{height:5px;border-radius:3px;background:#2b3040;width:60px;display:inline-block;vertical-align:middle;margin-left:6px}
+  .barra i{display:block;height:100%;border-radius:3px}
+  .cargando{color:var(--mut);font-size:.8rem;padding:8px 0}
+  h4.sec{font-size:.78rem;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin:12px 0 4px}
+  footer{color:var(--mut);font-size:.72rem;margin-top:18px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>🤖 CryptoBot <span>Top 100</span></h1>
+  <div class="estado" id="estado">Cargando…</div>
+</header>
+<div class="aviso">⚠️ Herramienta educativa. Datos: CoinGecko (precios/volumen) + OKX (funding, open interest, long/short — estilo CoinGlass). No es asesoramiento financiero.</div>
+
+<div class="grid">
+  <div class="tarjeta"><h2>🟢 ¿Qué COMPRAR HOY? (horizonte 24 horas)</h2><div id="topCompras"></div></div>
+  <div class="tarjeta"><h2>🔴 ¿Qué VENDER HOY? / tomar ganancias</h2><div id="topVentas"></div></div>
+</div>
+
+<div class="tarjeta">
+  <div class="controles">
+    <input id="buscar" placeholder="🔍 Buscar moneda…">
+    <button class="fbtn act" data-f="todas">Todas</button>
+    <button class="fbtn" data-f="compra">Compras</button>
+    <button class="fbtn" data-f="venta">Ventas</button>
+    <button class="fbtn" data-f="mantener">Mantener</button>
+  </div>
+  <div style="overflow-x:auto">
+  <table>
+    <thead><tr>
+      <th data-k="rank" title="Ranking global de CoinGecko — puede diferir del de CoinMarketCap (usan cálculos de supply distintos)">#</th><th data-k="nombre">Moneda</th><th data-k="precio">Precio</th>
+      <th data-k="ch24">24h</th><th data-k="ch3d">3d</th><th data-k="ch7d">7d</th><th data-k="ch30">30d</th>
+      <th data-k="rsi" title="RSI(14) sobre velas de 1 HORA — el RSI de 4h y el diario se ven en el detalle de cada moneda">RSI 1h</th><th data-k="pos_rango">Rango 7d</th>
+      <th data-k="flujo24" title="Capital neto 24h: $ de las velas 1h verdes menos las rojas (Binance/OKX EN VIVO). 🟢 entra dinero · 🔴 sale · — sin par en Binance/OKX">💵 Capital 24h</th>
+      <th data-k="funding" title="Funding rate del swap perpetuo (OKX)">Funding</th>
+      <th data-k="long_short" title="Ratio cuentas long/short (OKX)">L/S</th>
+      <th data-k="hoy" title="Timing intradía: ¿el momentum de hoy acompaña para ejecutar la señal? (MACD 1h + RSI 1h)">Hoy</th>
+      <th data-k="puntos" title="Puntuación 0-100 con horizonte de 24 horas (¿compro o vendo HOY?)">Nota 24h</th><th>Señal</th>
+    </tr></thead>
+    <tbody id="cuerpo"></tbody>
+  </table>
+  </div>
+</div>
+<footer>CoinGecko + OKX · Ciclo cada 5 min · RSI 1h/4h/diario, MACD, cruce EMA20/50 diario + SMA200, pivotes S/R, OBV, funding, OI, long/short · Horizonte: señal a 24 horas · columna Hoy = ¿acompaña el intradía ahora mismo? · confirmación 30/90d como contexto · clic en una moneda = análisis profundo</footer>
+
+<script>
+let datos=[], filtro='todas', ordenK='puntos', ordenAsc=false, abierto=null;
+const detalles={};
+
+const fmtM = x => x==null?'—':(x<0?'-':'+')+(Math.abs(x)>=1e9?(Math.abs(x)/1e9).toFixed(2)+'B$':Math.abs(x)>=1e6?(Math.abs(x)/1e6).toFixed(1)+'M$':(Math.abs(x)/1e3).toFixed(0)+'k$');
+const fmtP = p => p==null?'—': p>=1000?'$'+p.toLocaleString('en-US',{maximumFractionDigits:0})
+  : p>=1?'$'+p.toLocaleString('en-US',{maximumFractionDigits:2})
+  : '$'+p.toLocaleString('en-US',{maximumFractionDigits:6});
+const fmtC = v => v==null?'<span class="neut">—</span>'
+  :`<span class="${v>=0?'verde':'rojo'}">${v>=0?'+':''}${v.toFixed(1)}%</span>`;
+const fmtOI = v => v==null?'—': v>=1e9?'$'+(v/1e9).toFixed(2)+'B': v>=1e6?'$'+(v/1e6).toFixed(1)+'M':'$'+Math.round(v/1e3)+'K';
+const fmtF = f => f==null?'<span class="neut">—</span>'
+  :`<span class="${f>=0.03?'rojo':(f<0?'verde':'neut')}">${f.toFixed(3)}%</span>`;
+const fmtLS = ls => ls==null?'<span class="neut">—</span>'
+  :`<span class="${ls>=3?'rojo':(ls<=0.7?'verde':'neut')}">${ls.toFixed(2)}</span>`;
+const claseB = s=>({'COMPRA FUERTE':'b-cf','COMPRA':'b-c','MANTENER':'b-m','VENTA':'b-v','VENTA FUERTE':'b-vf','STABLE':'b-s'}[s]||'b-m');
+const colorScore = p => p>=68?'var(--green)':p>=58?'#86efac':p<=32?'var(--red)':p<=42?'#fca5a5':'#b9c2d8';
+
+async function cargar(){
+  try{
+    const r = await fetch('/api/analisis'); const j = await r.json();
+    if(j.monedas && j.monedas.length){ datos=j.monedas;
+      const nDeriv = datos.filter(m=>m.funding!=null).length;
+      const nVivo = datos.filter(m=>m.okx_vivo).length;
+      document.getElementById('estado').innerHTML =
+        `Última actualización<br><b>${new Date(j.actualizado).toLocaleTimeString('es-ES')}</b> · ${datos.length} monedas · derivados: ${nDeriv>0?nDeriv+' pares':'cargando…'} · ${nVivo>0?('📡 '+nVivo+' EN VIVO'):'⏳ velas en vivo: cargando…'} · <b>v${j.version||'?'}</b>`;
+      const avisoId='aviso-vivo'; let av=document.getElementById(avisoId);
+      if(nVivo===0){
+        if(!av){ av=document.createElement('div'); av.id=avisoId;
+          av.style.cssText='background:#2a2410;border:1px solid var(--amber,#d4a017);color:#e8c558;padding:10px 14px;border-radius:8px;margin:10px 0;font-size:.85rem';
+          av.innerHTML='⏳ <b>Primer ciclo en curso:</b> el flujo de capital 💵 (columna y panel 24h/1h), RSI 📡, funding y long/short salen de las velas EN VIVO de Binance/OKX y aparecerán en <b>~3 minutos</b>. La consola avisará con «Velas 1h EN VIVO aplicadas». Esta pantalla se refresca sola.';
+          document.querySelector('table').parentNode.insertBefore(av,document.querySelector('table'));
+        }
+      } else if(av){ av.remove(); }
+      render();
+    } else if(j.error){ document.getElementById('estado').textContent='Error: '+j.error; }
+    else { document.getElementById('estado').textContent='Analizando mercado…'; setTimeout(cargar,3000); }
+  }catch(e){ document.getElementById('estado').textContent='Sin conexión con el bot'; }
+}
+
+function render(){
+  const compras = datos.filter(m=>m.senal.startsWith('COMPRA')).slice(0,5);
+  const ventas  = [...datos].filter(m=>m.senal.startsWith('VENTA')).sort((a,b)=>a.puntos-b.puntos).slice(0,5);
+  const pick = m=>`<div class="pick" onclick="irA('${m.id}')">
+      <img src="${m.imagen}" onerror="this.style.visibility='hidden'">
+      <div><div class="nom">${m.nombre}</div><div class="sim">${m.simbolo} · ${fmtP(m.precio)}</div>
+      ${m.confirmada?`<div class="mini">✔ Confirmada 30d${m.tendencia_d?' · '+m.tendencia_d.toLowerCase():''}</div>`:'<div class="mini neut">⏳ pendiente de confirmación 30d</div>'}
+      ${m.accion?`<div class="mini" style="color:${m.accion.startsWith('✅')?'var(--green)':'var(--amber)'}">${m.accion}</div>`:''}</div>
+      <div class="der"><div class="score" style="color:${colorScore(m.puntos)}">${m.puntos}</div>
+      <span class="badge ${claseB(m.senal)}">${m.senal}</span></div></div>`;
+  document.getElementById('topCompras').innerHTML = compras.length?compras.map(pick).join(''):'<div class="mini">Ninguna señal clara de compra ahora mismo.</div>';
+  document.getElementById('topVentas').innerHTML  = ventas.length?ventas.map(pick).join(''):'<div class="mini">Ninguna señal clara de venta ahora mismo.</div>';
+
+  const q = document.getElementById('buscar').value.toLowerCase();
+  let lista = datos.filter(m =>
+    (m.nombre.toLowerCase().includes(q)||m.simbolo.toLowerCase().includes(q)) &&
+    (filtro==='todas' || (filtro==='compra'&&m.senal.startsWith('COMPRA'))
+      || (filtro==='venta'&&m.senal.startsWith('VENTA'))
+      || (filtro==='mantener'&&(m.senal==='MANTENER'||m.senal==='STABLE'))));
+  lista.sort((a,b)=>{const x=a[ordenK]??-1e18,y=b[ordenK]??-1e18;
+    return (typeof x==='string'? x.localeCompare(y) : x-y) * (ordenAsc?1:-1);});
+
+  document.getElementById('cuerpo').innerHTML = lista.map(m=>`
+    <tr class="fila" onclick="toggle('${m.id}')" id="f-${m.id}">
+      <td class="neut">${m.rank??'—'}</td>
+      <td><div class="cel-moneda"><img src="${m.imagen}" onerror="this.style.visibility='hidden'">
+        <b>${m.nombre}</b> <span class="neut">${m.simbolo}</span>${m.watch?' <span title="Favorita (watchlist): se analiza aunque no esté en el top 100">⭐</span>':''}${m.liquidez_baja?' <span title="Liquidez muy baja: volumen inferior al 2% del market cap">⚠️</span>':''}</div></td>
+      <td>${fmtP(m.precio)}</td>
+      <td>${fmtC(m.ch24)}</td><td>${fmtC(m.ch3d)}</td><td>${fmtC(m.ch7d)}</td><td>${fmtC(m.ch30)}</td>
+      <td>${m.rsi!=null?m.rsi.toFixed(0):'—'}</td>
+      <td>${m.pos_rango!=null?m.pos_rango.toFixed(0)+'%':'—'}<span class="barra"><i style="width:${m.pos_rango??0}%;background:${(m.pos_rango??50)<35?'var(--green)':(m.pos_rango>75?'var(--red)':'var(--blue)')}"></i></span></td>
+      <td>${m.flujo24!=null?`<span style="color:${m.flujo24>=0?'var(--green)':'var(--red)'};font-weight:600">${m.flujo24>=0?'🟢':'🔴'} ${fmtM(m.flujo24)}</span>`:'—'}</td>
+      <td>${fmtF(m.funding)}</td>
+      <td>${fmtLS(m.long_short)}</td>
+      <td title="${m.hoy==='favorable'?'El intradía acompaña hoy':(m.hoy==='desfavorable'?'El intradía va en contra hoy: mejor esperar':'Intradía neutro')}">${m.hoy==='favorable'?'🟢':(m.hoy==='desfavorable'?'🔴':'⚪')}</td>
+      <td style="color:${colorScore(m.puntos)};font-weight:700">${m.puntos}</td>
+      <td><span class="badge ${claseB(m.senal)}">${m.senal}</span></td>
+    </tr>
+    <tr class="detalle" id="d-${m.id}"><td colspan="15">${abierto===m.id?htmlDetalle(m):''}</td></tr>`).join('');
+  if(abierto){ const d=document.getElementById('d-'+abierto); if(d){ d.style.display='table-row'; cargarProfundo(abierto); } }
+}
+
+function filaSR(n, tipo, precio){
+  const pct = Math.min(100, Math.abs(n.dist)*6+8);
+  const col = tipo==='S'?'var(--green)':'var(--red)';
+  return `<div class="sr-fila">
+    <span class="sr-tag">${tipo==='S'?'Soporte':'Resistencia'}</span>
+    <span class="sr-precio" style="color:${col}">${fmtP(n.nivel)}</span>
+    <span class="sr-barra"><i style="width:${pct}%;background:${col}"></i></span>
+    <span class="sr-dist">${n.dist>0?'+':''}${n.dist}% · ${n.toques} toque${n.toques>1?'s':''}</span></div>`;
+}
+
+function htmlDetalle(m){
+  const der = m.funding!=null||m.oi_usd!=null||m.long_short!=null;
+  const tvSym = m.fuente_vivo==='Binance' ? ('BINANCE:'+m.simbolo+'USDT')
+             : (m.okx_vivo ? ('OKX:'+m.simbolo+'USDT') : (m.simbolo+'USDT'));
+  let h = `<div style="margin:2px 0 12px">
+    <iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(tvSym)}&interval=60&theme=dark&style=1&locale=es&hide_side_toolbar=0&allow_symbol_change=1&withdateranges=1&saveimage=0&hide_volume=0"
+      style="width:100%;height:440px;border:0;border-radius:10px;background:#0d1117" loading="lazy" allowfullscreen></iframe>
+    <div class="mini" style="margin-top:4px">📊 Gráfico TradingView (${tvSym}) · cambia la temporalidad (1m · 15m · 1h · 4h · 1D…) en la barra del gráfico ·
+      <a href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}" target="_blank" rel="noopener" style="color:var(--blue)">abrir en grande ↗</a> ·
+      si sale "símbolo no encontrado", haz clic en el nombre del par dentro del gráfico y búscalo (algunas monedas pequeñas solo cotizan en ciertos exchanges)</div>
+  </div>`;
+  h += `<div class="cols-det"><div>
+    <b>Análisis de ${m.nombre}</b>
+    <ul>${m.razones.map(r=>`<li>${r}</li>`).join('')}</ul>
+    <h4 class="sec">Soportes y resistencias (últimas 48h — mechas de velas 1h reales)</h4>
+    <div class="sr">
+      ${(m.resistencias||[]).slice().reverse().map(n=>filaSR(n,'R',m.precio)).join('')}
+      <div class="sr-fila"><span class="sr-tag" style="color:var(--txt)">→ Precio</span>
+        <span class="sr-precio">${fmtP(m.precio)}</span><span class="sr-barra"></span><span class="sr-dist"></span></div>
+      ${(m.soportes||[]).map(n=>filaSR(n,'S',m.precio)).join('')}
+      ${!(m.soportes||[]).length&&!(m.resistencias||[]).length?'<div class="mini">Sin pivotes claros en las últimas 48h.</div>':''}
+    </div>
+    <div class="niveles">
+      <div class="nivel">🎯 Zona de compra<b class="verde">${m.objetivo_compra?fmtP(m.objetivo_compra):'— sin soporte cercano'}</b></div>
+      <div class="nivel">💰 Objetivo de venta<b class="rojo">${m.objetivo_venta?fmtP(m.objetivo_venta):'— en máximos, sin resistencia'}</b></div>
+      <div class="nivel">🛑 Stop-loss<b>${fmtP(m.stop_loss)}</b></div>
+    </div>
+    ${m.accion?`<div class="nivel" style="margin-top:10px;border-color:${m.accion.startsWith('✅')?'var(--green)':'var(--amber)'}">📌 Acción sugerida HOY<b>${m.accion}</b></div>`:''}
+  </div><div>
+    ${m.flujo24!=null?`<h4 class="sec">💵 Flujo de capital (velas ${m.fuente_vivo||'OKX'} EN VIVO)</h4>
+    <div class="niveles" style="margin-bottom:4px">
+      <div class="nivel" title="$ movidos por las velas 1h VERDES (compra) menos las ROJAS (venta) en las últimas 24h">Capital neto 24h<b class="${m.flujo24>0?'verde':'rojo'}">${fmtM(m.flujo24)} ${m.flujo24>=0?'🟢 entra':'🔴 sale'}</b></div>
+      <div class="nivel" title="Lo mismo pero solo con la última vela de 1h">Capital última hora<b class="${m.flujo1h>0?'verde':'rojo'}">${fmtM(m.flujo1h)} ${m.flujo1h>=0?'🟢 entra':'🔴 sale'}</b></div>
+      <div class="nivel" title="Qué parte del volumen total de 24h es compra/venta neta">Dominancia 24h<b class="${Math.abs(m.flujo24)/Math.max(m.flujo_tot24,1)>=0.25?(m.flujo24>0?'verde':'rojo'):''}">${(Math.abs(m.flujo24)/Math.max(m.flujo_tot24,1)*100).toFixed(0)}% ${m.flujo24>=0?'compradora':'vendedora'}</b></div>
+    </div>
+    <div class="mini" style="margin-bottom:8px">capital = $ de las velas 1h verdes − $ de las rojas · puede entrar capital en un día rojo (absorción: compran la caída) y salir en uno verde (distribución)</div>`:''}
+    <h4 class="sec">Derivados (OKX, estilo CoinGlass)</h4>
+    <div class="niveles" style="margin-bottom:8px">
+      <div class="nivel" title="${m.okx_vivo?('Medido con velas 1h EN VIVO de '+(m.fuente_vivo||'OKX')):'⏳ = dato de CoinGecko (~1h de retraso). Pasa a 📡 EN VIVO tras el primer ciclo completo (~3-5 min desde el arranque), si la moneda cotiza en Binance/OKX'}">RSI 1h${m.okx_vivo?' 📡':' ⏳'}<b class="${m.rsi>=65?'rojo':(m.rsi<=35?'verde':'')}">${m.rsi!=null?m.rsi.toFixed(0):'—'}</b></div>
+      <div class="nivel">RSI 4h<b class="${m.rsi4h>=70?'rojo':(m.rsi4h<=30?'verde':'')}">${m.rsi4h!=null?m.rsi4h.toFixed(0):'—'}</b></div>
+      <div class="nivel">RSI diario<b id="rsid-${m.id}">⏳</b></div>
+    </div>
+    ${der?`<div class="niveles">
+      <div class="nivel">Funding rate (8h)<b>${m.funding!=null?m.funding.toFixed(4)+'%':'—'}</b></div>
+      <div class="nivel">Open Interest<b>${fmtOI(m.oi_usd)}</b></div>
+      <div class="nivel">Cuentas Long/Short<b>${m.long_short!=null?m.long_short.toFixed(2):'—'}</b></div>
+
+    </div>`:`<div class="mini">Sin par de futuros en OKX o datos aún cargando.</div>`}
+    <h4 class="sec">Flujo de capital (30 días)</h4>
+    <div id="prof-${m.id}" class="cargando">⏳ Cargando análisis profundo…</div>
+  </div></div>`;
+  return h;
+}
+
+async function cargarProfundo(id){
+  const cont = ()=>document.getElementById('prof-'+id);
+  try{
+    const c = detalles[id];
+    if(!c || Date.now()-c.t > 300000){   // caché de 5 min; una sola petición aunque se redibuje varias veces
+      detalles[id] = { t: Date.now(), p: fetch('/api/detalle/'+id).then(r=>r.json()) };
+    }
+    const d = await detalles[id].p;
+    if(!cont()) return;
+    if(!d.ok){ cont().innerHTML = `<span class="ambar">⚠️ ${d.error}</span>`; if(d.error&&d.error.includes('Límite')) delete detalles[id]; return; }
+    const rd = document.getElementById('rsid-'+id);
+    if(rd){ rd.textContent = d.rsi_diario!=null? d.rsi_diario.toFixed(0) : '—';
+      rd.className = d.rsi_diario>=70?'rojo':(d.rsi_diario<=30?'verde':''); }
+    const w = d.flujo_30d;
+    const divergencia = w && w.pend_precio>0.25 && w.pend_obv<0;
+    cont().innerHTML = `
+      ${w?`${divergencia?'<div class="mini" style="color:var(--red);margin-bottom:6px">⚠️ El precio sube pero el OBV cae: divergencia bajista</div>':''}
+      <div class="niveles">
+        <div class="nivel">Flujo de dinero (OBV 10d)<b class="${divergencia?'rojo':(w.pend_obv>0.15?'verde':'')}">${divergencia?'⚠️ sale dinero':(w.pend_obv>0.15?'entra dinero':(w.pend_obv<-0.15?'sale dinero':'plano'))}</b></div>
+        <div class="nivel">Posición en rango 30d<b>${w.pos_mes}%</b></div>
+        ${d.taker_ratio!=null?`<div class="nivel">Taker compra/venta 1h<b class="${d.taker_ratio>1.1?'verde':(d.taker_ratio<0.9?'rojo':'')}">${d.taker_ratio} ${d.taker_ratio>=1.05?'(dominan compras)':(d.taker_ratio<=0.95?'(dominan ventas)':'(equilibrado)')}</b></div>`:''}
+      </div>`:'<div class="mini">Serie insuficiente para medir el flujo.</div>'}
+      ${d.tendencia_diaria?`<h4 class="sec">Tendencia diaria (última semana vs anterior)</h4>
+      <span class="fase ${d.tendencia_diaria.clase.startsWith('ALCISTA')?'f-acu':(d.tendencia_diaria.clase.startsWith('BAJISTA')?'f-dis':'f-neu')}">${d.tendencia_diaria.clase.startsWith('ALCISTA')?'📈':(d.tendencia_diaria.clase.startsWith('BAJISTA')?'📉':'➡️')} ${d.tendencia_diaria.clase}</span>
+      <div class="mini" style="margin:4px 0 8px">${d.tendencia_diaria.descripcion}</div>
+      <div class="niveles">
+        <div class="nivel">Días verdes (últimos 7)<b>${d.tendencia_diaria.dias_verdes_7}/7</b></div>
+      </div>`:''}
+      ${d.cruces_diarios?`<h4 class="sec">Cruces de medias (diario, 90 días)</h4>
+      <div class="niveles">
+        ${d.cruces_diarios.ema?`<div class="nivel">EMA 20/50 diario<b class="${d.cruces_diarios.ema.estado==='alcista'?'verde':'rojo'}">${d.cruces_diarios.ema.estado==='alcista'?'📈 Alcista':'📉 Bajista'}${d.cruces_diarios.ema.cruce_hace_dias!=null&&d.cruces_diarios.ema.cruce_hace_dias<=5?' · cruzó hace '+d.cruces_diarios.ema.cruce_hace_dias+'d':''}</b></div>`:''}
+        ${d.cruces_diarios.precio_vs_sma20!=null?`<div class="nivel">Precio vs SMA20 diaria<b class="${d.cruces_diarios.precio_vs_sma20>=0?'verde':'rojo'}">${d.cruces_diarios.precio_vs_sma20>0?'+':''}${d.cruces_diarios.precio_vs_sma20}%</b></div>`:''}
+      </div>`:''}
+      <h4 class="sec">Soportes y resistencias (30 días)</h4>
+      <div class="sr">
+        ${(d.resistencias_30d||[]).slice().reverse().map(n=>filaSR(n,'R')).join('')}
+        ${(d.soportes_30d||[]).map(n=>filaSR(n,'S')).join('')}
+        ${!(d.soportes_30d||[]).length&&!(d.resistencias_30d||[]).length?'<div class="mini">Sin niveles claros.</div>':''}
+      </div>
+      <h4 class="sec">Muros de órdenes en vivo (libro de Coinbase)</h4>
+      ${d.muros?`<div class="sr">
+        ${d.muros.venta.map(m=>`<div class="sr-fila"><span class="sr-tag">Muro venta</span>
+          <span class="sr-precio rojo">${fmtP(m.precio)}</span>
+          <span class="sr-barra"><i style="width:${Math.min(100,m.usd/Math.max(...d.muros.venta.concat(d.muros.compra).map(x=>x.usd))*100)}%;background:var(--red)"></i></span>
+          <span class="sr-dist">${fmtOI(m.usd)} · +${m.dist}%</span></div>`).join('')}
+        ${d.muros.compra.map(m=>`<div class="sr-fila"><span class="sr-tag">Muro compra</span>
+          <span class="sr-precio verde">${fmtP(m.precio)}</span>
+          <span class="sr-barra"><i style="width:${Math.min(100,m.usd/Math.max(...d.muros.venta.concat(d.muros.compra).map(x=>x.usd))*100)}%;background:var(--green)"></i></span>
+          <span class="sr-dist">${fmtOI(m.usd)} · ${m.dist}%</span></div>`).join('')}
+        <div class="mini" style="margin-top:4px">Órdenes límite reales cercanas al precio: los muros grandes de compra frenan caídas; los de venta frenan subidas.</div>
+      </div>`:'<div class="mini">No listada en Coinbase (sin libro de órdenes disponible).</div>'}`;
+  }catch(e){ delete detalles[id]; if(cont()) cont().innerHTML='<span class="ambar">Error al cargar el detalle. Se reintentará en el próximo refresco.</span>'; }
+}
+
+function toggle(id){ abierto = abierto===id?null:id; render(); }
+function irA(id){ filtro='todas'; document.querySelectorAll('.fbtn').forEach(b=>b.classList.toggle('act',b.dataset.f==='todas'));
+  abierto=id; render();
+  const f=document.getElementById('f-'+id); if(f) f.scrollIntoView({behavior:'smooth',block:'center'}); }
+
+document.getElementById('buscar').addEventListener('input',render);
+document.querySelectorAll('.fbtn').forEach(b=>b.onclick=()=>{ filtro=b.dataset.f;
+  document.querySelectorAll('.fbtn').forEach(x=>x.classList.toggle('act',x===b)); render(); });
+document.querySelectorAll('th[data-k]').forEach(th=>th.onclick=()=>{
+  const k=th.dataset.k; if(ordenK===k) ordenAsc=!ordenAsc; else {ordenK=k;ordenAsc=false;} render(); });
+
+cargar(); setInterval(cargar, 60000);
+</script>
+</body>
+</html>
