@@ -19,6 +19,20 @@ Salidas:
 * `reports/predictions.html`: dashboard interactivo (tabla clicable + velas + banda prevista)
 * `reports/prices.png`: panel de gráficos por moneda (velas recientes, proyección y rango)
 
+### Requisitos en Windows (PowerShell)
+
+```powershell
+py -m pip install -r requirements.txt      # si "python" no funciona, usa "py"
+cd topbot                                  # carpeta que contiene bot.py
+py bot.py                                  # ya funciona la ejecución directa
+# o desde la raíz del proyecto:
+py scripts\predict.py --online --dashboard
+```
+
+Nota: `bot.py` está dentro de la carpeta `topbot/`. Si lo ejecutas directamente
+(`python bot.py`) ahora funciona sin errores de import; también puedes usar
+`python -m topbot.bot` o `python scripts/run_bot.py` desde la raíz.
+
 ## Cómo decide (mejoras frente a la versión anterior)
 
 1. **Sin look-ahead**: walk-forward purgado con gap ≥ 2×horizonte; predice solo sobre vela cerrada.

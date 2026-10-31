@@ -17,6 +17,17 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
+if __package__ in (None, ""):
+    # Ejecución directa del archivo (`python bot.py`). Convertimos el módulo en
+    # paquete para que los imports relativos funcionen sin instalar nada.
+    import types, os, sys
+    _pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    if "topbot" not in sys.modules:
+        _pkg = types.ModuleType("topbot")
+        _pkg.__path__ = [_pkg_dir]
+        sys.modules["topbot"] = _pkg
+    __package__ = "topbot"
+
 from .data import DataConfig, load_dataset
 from .features import build_features
 from .model import ModelConfig, train, signal as make_signal
@@ -113,3 +124,34 @@ class TopBot:
     def _log(self, decision: dict):
         with open(self.cfg.log_file, "a") as f:
             f.write(json.dumps(decision, default=str) + "\n")
+
+
+# ---------------- CLI: python bot.py (ejecución directa, sin instalar el paquete) ----------------
+if __name__ == "__main__":
+    import argparse
+
+    logging.basicConfig(level=logging.INFO,
+                        format="%(levelname)s %(name)s: %(message)s")
+    ap = argparse.ArgumentParser(
+        description="TopBot: orquestador datos -> features -> modelo -> riesgo.")
+    ap.add_argument("--mode", choices=["step", "backtest", "train"], default="step")
+    ap.add_argument("--symbol", default="BTCUSDT")
+    ap.add_argument("--interval", default="1h", choices=["15m", "1h", "4h", "1d"])
+    ap.add_argument("--days", type=int, default=730)
+    ap.add_argument("--online", action="store_true",
+                    help="descargar datos reales de Binance (por defecto usa caché/offline)")
+    args = ap.parse_args()
+
+    cfg = BotConfig(symbol=args.symbol, interval=args.interval, days=args.days,
+                    use_network=args.online)
+    bot = TopBot(cfg)
+    if args.mode == "backtest":
+        from .backtest import BacktestConfig, run_backtest
+        dcfg = DataConfig(symbol=cfg.symbol, interval=cfg.interval,
+                          use_network=cfg.use_network)
+        df = load_dataset(cfg.symbol, cfg.interval, cfg.days, dcfg)
+        print(run_backtest(df, BacktestConfig(), ModelConfig(), RiskConfig()))
+    else:
+        bot.train() if args.mode == "train" else None
+        decision = bot.step()
+        print(json.dumps(decision, indent=2, default=str))
