@@ -37,6 +37,30 @@ log = logging.getLogger("topbot.predictor")
 # Comisión spot típica Binance: 0.10% taker por lado => ~0.20% ida y vuelta
 SPOT_FEE_ROUNDTRIP = 0.002
 
+_PRETTY = {
+    "ret_1": "retorno 1 vela", "ret_2": "retorno 2 velas", "ret_3": "retorno 3 velas",
+    "ret_6": "retorno 6 velas", "ret_12": "retorno 12 velas", "ret_24": "retorno 24h",
+    "ret_48": "retorno 48h", "ret_72": "retorno 72h", "ret_168": "retorno 7d",
+    "mom_ema_9_21": "cruce EMA 9/21", "mom_ema_21_50": "cruce EMA 21/50",
+    "mom_ema_50_200": "tendencia EMA 50/200", "rsi_14": "RSI(14)",
+    "rsi_7": "RSI(7)", "macd_hist": "histograma MACD", "bb_pos": "posición Bandas Bollinger",
+    "bb_width": "anchura Bollinger", "atr_rel": "volatilidad ATR relativa",
+    "stoch_k": "Estocástico %K", "zscore_200": "Z-score 200", "vwap_dev": "desvío VWAP",
+    "vol_ratio": "ratio de volumen", "obv_slope": "pendiente OBV",
+    "vol_regime": "régimen de volatilidad", "hl_range": "rango alta-baja",
+    "close_loc": "cierre en el rango", "hour_sin": "hora (seno)", "hour_cos": "hora (coseno)",
+    "dow": "día de semana",
+}
+
+
+def _pretty_feature(name: str) -> str:
+    return _PRETTY.get(name, name.replace("_", " "))
+
+
+# Features cíclicas/de calendario: su signo lineal no es interpretable; se
+# excluyen de los drivers para no engañar con falsos "alcista/bajista".
+_NON_DIRECTIONAL = {"hod_sin", "hod_cos", "dow_sin", "dow_cos", "month", "is_weekend"}
+
 
 @dataclass
 class PredictorConfig:
@@ -104,7 +128,27 @@ class CoinPredictor:
     feature_names: list[str]
     horizon: int
     atr_rel_now: float          # ATR relativo actual (para banda heurística)
+    gbm_imp: Optional[np.ndarray] = None   # permutación de importancia (escala z)
+    logit_coefs: Optional[pd.Series] = None  # coeficientes estandarizados del Logit
     stats: dict = field(default_factory=dict)
+
+    def drivers(self, X_last: pd.DataFrame, top_n: int = 3) -> list[tuple[str, str]]:
+        """Explica QUÉ empuja la señal: contribución lineal del Logit (signo
+        exacto) escalada por la importancia de cada feature en el ensemble.
+        Devuelve [(feature legible, 'alcista/bajista')]."""
+        if self.logit_coefs is None:
+            return []
+        row = X_last[self.feature_names]
+        contrib = self.logit_coefs.reindex(self.feature_names).fillna(0) * row.iloc[0]
+        contrib = contrib.drop(index=[f for f in _NON_DIRECTIONAL
+                                      if f in contrib.index], errors="ignore")
+        if self.gbm_imp is not None:
+            imp = pd.Series(self.gbm_imp, index=self.feature_names)
+            scale = (imp / max(float(imp.max()), 1e-9)).clip(0.25, 1.0)
+            contrib = contrib * scale.reindex(contrib.index).fillna(1.0)
+        ranked = contrib.abs().sort_values(ascending=False).head(top_n)
+        return [(_pretty_feature(f), "alcista" if contrib[f] > 0 else "bajista")
+                for f in ranked.index if abs(contrib[f]) > 1e-6]
 
     def predict(self, X: pd.DataFrame) -> dict:
         """X: DataFrame de features (normalmente la última fila = 'ahora').
@@ -193,6 +237,20 @@ def train_coin_predictor(X: pd.DataFrame, y_tri: pd.Series, y_fwd: pd.Series,
     denom = (ml - 0.48) + (mg - 0.48)
     w_gbm = float(np.clip((mg - 0.48) / denom, 0.25, 0.75)) if denom > 0 else 0.5
 
+    # --- Explicabilidad: coefs del Logit (escala z) + importancia permutacional GBM
+    logit_coefs = pd.Series(lg_f.coef_[0], index=list(X.columns))
+    gbm_imp = None
+    try:
+        from sklearn.inspection import permutation_importance
+        va_i = tr_all[-min(600, len(tr_all) // 4):]  # holdout temporal reciente
+        if len(va_i) >= 100:
+            res = permutation_importance(
+                gb_f, X.iloc[va_i], y_bin[va_i], n_repeats=4, random_state=cfg.random_state,
+                scoring="neg_log_loss", n_jobs=1)
+            gbm_imp = np.clip(res.importances_mean, 0, None)
+    except Exception as exc:
+        log.debug("permutation_importance no disponible: %s", exc)
+
     # Cuantiles del retorno forward (solo en tramos informativos, sin neutros raros)
     Xtr_q, yf_tr = X.iloc[tr_all], y_fwd.values[tr_all]
     q_med, q_lo, q_hi = (_QuantileModel(0.5), _QuantileModel(cfg.quantiles[0]),
@@ -214,7 +272,8 @@ def train_coin_predictor(X: pd.DataFrame, y_tri: pd.Series, y_fwd: pd.Series,
         "quantiles_ok": bool(ok),
     }
     return CoinPredictor(lg_f, gb_f, w_gbm, (a, b), q_med, q_lo, q_hi,
-                         list(X.columns), horizon, atr_rel_now, stats)
+                         list(X.columns), horizon, atr_rel_now,
+                         gbm_imp=gbm_imp, logit_coefs=logit_coefs, stats=stats)
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +322,7 @@ def predict_symbol(symbol: str, cfg: PredictorConfig,
 
     Devuelve dict con: precio actual, por horizonte {p_up, retorno mediana,
     rango de precio}, y decisión del horizonte primario. None si hay pocos datos.
+    Si `df` se proporciona, se reutiliza (evita recargas desde el dashboard).
     """
     if df is None:
         df = load_dataset(symbol=symbol, interval=cfg.interval, days=cfg.days,
@@ -300,6 +360,8 @@ def predict_symbol(symbol: str, cfg: PredictorConfig,
         r_med = float(np.asarray(out["ret_med"]).ravel()[0])
         r_lo = float(np.asarray(out["ret_lo"]).ravel()[0])
         r_hi = float(np.asarray(out["ret_hi"]).ravel()[0])
+        # ordenamos por si los cuantiles/heurística quedaran invertidos
+        r_lo, r_hi = min(r_lo, r_hi), max(r_lo, r_hi)
         # retorno esperado aproximado: media de la banda ponderada por p_up
         exp_ret = float(r_lo * (1 - p_up) + r_hi * p_up)
         net = exp_ret - cfg.fee_roundtrip
@@ -313,6 +375,7 @@ def predict_symbol(symbol: str, cfg: PredictorConfig,
             "price_median": round(price_now * np.exp(r_med), 8),
             "acc_oos": pred.stats["acc_oos"],
             "confidence": confidence_label(pred.stats["acc_oos"], pred.stats["n_train"]),
+            "drivers": pred.drivers(X_last),
             "stats": pred.stats,
         }
 
@@ -326,26 +389,39 @@ def predict_symbol(symbol: str, cfg: PredictorConfig,
                             prim["acc_oos"], cfg)
     result["action"] = action
     result["reason"] = reason
+    # drivers legibles del horizonte principal: {"RSI(14)": "bajista", ...}
+    result["highlights"] = {f: d for f, d in prim.get("drivers", [])}
     # score para ranking: ventaja neta ajustada por confianza histórica
     conf_w = {"ALTA": 1.0, "MEDIA": 0.7, "BAJA": 0.4, "MUY BAJA": 0.1}[prim["confidence"]]
     result["score"] = round(prim["exp_return_net_fee"] * conf_w, 5)
     return result
 
 
-def predict_watchlist(cfg: Optional[PredictorConfig] = None) -> pd.DataFrame:
-    """Tabla resumen de todas las monedas, ordenada por atractivo de compra."""
+def predict_watchlist(cfg: Optional[PredictorConfig] = None,
+                      with_frames: bool = False):
+    """Tabla resumen de todas las monedas, ordenada por atractivo de compra.
+
+    Con with_frames=True devuelve también (tabla, resultados_completos, dfs)
+    para que el dashboard no vuelva a descargar/entrenar."""
     cfg = cfg or PredictorConfig()
-    rows = []
+    rows, results, frames = [], [], {}
     for sym in cfg.symbols:
         t0 = time.time()
         try:
-            r = predict_symbol(sym, cfg)
+            df = load_dataset(symbol=sym, interval=cfg.interval, days=cfg.days,
+                              cfg=DataConfig(symbol=sym, interval=cfg.interval,
+                                             cache_dir=cfg.cache_dir,
+                                             use_network=cfg.use_network))
+            r = predict_symbol(sym, cfg, df=df)
         except Exception as exc:
             log.error("%s: fallo (%s)", sym, exc)
             continue
         if r is None:
             continue
+        frames[sym] = df
+        results.append(r)
         prim = r["primary"]
+        drivers_txt = ", ".join(f"{f} {d}" for f, d in prim.get("drivers", []))
         rows.append({
             "moneda": sym,
             "precio_actual": r["price_now"],
@@ -358,11 +434,14 @@ def predict_watchlist(cfg: Optional[PredictorConfig] = None) -> pd.DataFrame:
             "rango_p20_p80": f"{prim['price_range'][0]:.6g} – {prim['price_range'][1]:.6g}",
             "confianza": prim["confidence"],
             "acc_oos_%": round(prim["acc_oos"] * 100, 1),
+            "drivers": drivers_txt,
             "score": r["score"],
             "motivo": r["reason"],
         })
         log.info("%s procesada en %.1fs", sym, time.time() - t0)
-    df = pd.DataFrame(rows)
-    if len(df):
-        df = df.sort_values("score", ascending=False).reset_index(drop=True)
-    return df
+    df_out = pd.DataFrame(rows)
+    if len(df_out):
+        df_out = df_out.sort_values("score", ascending=False).reset_index(drop=True)
+    if with_frames:
+        return df_out, results, frames
+    return df_out

@@ -1,11 +1,13 @@
 """CLI del predictor multi-moneda: qué comprar/vender hoy en spot.
 
 Ejemplos:
+  python scripts/predict.py --online --dashboard           # tabla + HTML + PNG
   python scripts/predict.py --online                       # watchlist completa, datos reales
   python scripts/predict.py --symbols BTCUSDT ETHUSDT --online
   python scripts/predict.py --interval 4h --horizon 24     # señal a 24h con velas 4h
   python scripts/predict.py                                # modo offline (sintético/caché)
-Salidas: tabla por consola + predictions.csv + predictions.json (histórico auditable).
+Salidas: tabla por consola + predictions.csv + predictions.json (histórico auditable)
+         + reports/predictions.html y reports/prices.png (--dashboard).
 """
 import argparse
 import json
@@ -31,6 +33,8 @@ ap.add_argument("--horizon", type=int, default=24,
 ap.add_argument("--online", action="store_true", help="descargar datos reales de Binance")
 ap.add_argument("--detail", action="store_true",
                 help="guardar además el detalle multi-horizonte (4h/1d/3d/7d) en JSONL")
+ap.add_argument("--dashboard", action="store_true",
+                help="genera reports/predictions.html (interactivo) y reports/prices.png")
 ap.add_argument("--csv", default="predictions.csv")
 ap.add_argument("--json-out", default="logs/predictions.jsonl")
 args = ap.parse_args()
@@ -44,20 +48,24 @@ now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 print(f"\n=== PREDICTOR TOPBOT — {now} | velas {cfg.interval} | "
       f"señal principal: {cfg.primary_horizon}h ===\n")
 
-tabla = predict_watchlist(cfg)
+if args.dashboard:
+    tabla, results, frames = predict_watchlist(cfg, with_frames=True)
+else:
+    tabla = predict_watchlist(cfg)
+    results, frames = [], {}
 if len(tabla) == 0:
     print("Sin resultados (¿historial insuficiente o sin red? prueba --online).")
     sys.exit(1)
 
 EMOJIS = {"COMPRAR": "🟢", "ESPERAR": "🟡", "VENDER": "🔴"}
 
-pd.set_option("display.width", 200)
+pd.set_option("display.width", 220)
 pd.set_option("display.max_colwidth", 60)
 view = tabla.copy()
 view["accion"] = view["accion"].map(lambda a: f"{EMOJIS.get(a, '')} {a}")
 print(view[["moneda", "precio_actual", "accion", "p_alza", "horizon_h",
             "retorno_esperado_%", "retorno_neto_%", "precio_estimado",
-            "rango_p20_p80", "confianza", "acc_oos_%"]].to_string(index=False))
+            "rango_p20_p80", "confianza", "acc_oos_%", "drivers"]].to_string(index=False))
 print("\nMotivos:")
 for _, r in tabla.iterrows():
     print(f"  {r['moneda']:<10} {r['accion']:<8} {r['motivo']}")
@@ -69,7 +77,7 @@ detail = []
 if args.detail:  # recalcula con todos los horizontes para el registro completo
     for sym in cfg.symbols:
         try:
-            r = predict_symbol(sym, cfg)
+            r = predict_symbol(sym, cfg, df=frames.get(sym))
             if r:
                 detail.append(r)
         except Exception as exc:
@@ -80,5 +88,19 @@ with open(args.json_out, "a") as fh:
                          "summary": tabla.to_dict(orient="records"),
                          "detail": detail}, default=str) + "\n")
 print(f"\nGuardado: {args.csv} y {args.json_out}")
+
+# Dashboard visual (tabla ranking + gráfico por moneda con banda prevista)
+if args.dashboard:
+    for r in results:
+        r["generated_at"] = now
+    os.makedirs("reports", exist_ok=True)
+    from topbot.dashboard import plot_coins_png, render_html
+    summary = (f"velas {cfg.interval} · señal principal {cfg.primary_horizon}h · "
+               f"datos {'reales Binance' if cfg.use_network else 'caché/sintéticos'} · {now}")
+    if render_html(results, frames, "reports/predictions.html", summary):
+        print("Dashboard interactivo: reports/predictions.html")
+    if plot_coins_png(results, frames, "reports/prices.png"):
+        print("Panel de gráficos:   reports/prices.png")
+
 print("\n⚠️  No es asesoramiento financiero. Las probabilidades están validadas "
       "solo en el pasado;\nel mercado puede cambiar de régimen. Empieza por las de confianza ALTA/MEDIA.")

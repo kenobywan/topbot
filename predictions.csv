@@ -1,4 +1,9 @@
-moneda,precio_actual,accion,p_alza,horizon_h,retorno_esperado_%,retorno_neto_%,precio_estimado,rango_p20_p80,confianza,acc_oos_%,score,motivo
-BTCUSDT,82124.22705533,ESPERAR,0.4798,24,0.7,0.5,82585.05145383,81851.1 – 83629.6,ALTA,83.9,0.00498,señal débil (P(alza)=48% cerca de 50%)
-ETHUSDT,82124.22705533,ESPERAR,0.4798,24,0.7,0.5,82585.05145383,81851.1 – 83629.6,ALTA,83.9,0.00498,señal débil (P(alza)=48% cerca de 50%)
-SOLUSDT,82124.22705533,ESPERAR,0.4798,24,0.7,0.5,82585.05145383,81851.1 – 83629.6,ALTA,83.9,0.00498,señal débil (P(alza)=48% cerca de 50%)
+moneda,precio_actual,accion,p_alza,horizon_h,retorno_esperado_%,retorno_neto_%,precio_estimado,rango_p20_p80,confianza,acc_oos_%,drivers,score,motivo
+BTCUSDT,77440.0,COMPRAR,0.645,24,0.69,0.48,76816.41939007,75362.5 – 79447.2,MEDIA,55.5,"atr rel pct alcista, histograma MACD bajista, macd cross alcista",0.0034,"P(alza 24h)=64%, retorno esperado neto +0.48%"
+SOLUSDT,95.75,ESPERAR,0.468,24,-0.38,-0.58,93.98329966,91.1764 – 100.405,MUY BAJA,45.4,"atr rel pct alcista, rv ratio long alcista, mom z 72 alcista",-0.00058,señal débil (P(alza)=47% cerca de 50%) · exactitud histórica OOS pobre (45.4%): no conviene operar esta moneda
+BNBUSDT,707.63,ESPERAR,0.4281,24,-0.39,-0.59,714.74107074,687.473 – 728.824,MUY BAJA,45.8,"rv ratio long bajista, atr rel pct alcista, anchura Bollinger alcista",-0.00059,señal débil (P(alza)=43% cerca de 50%) · exactitud histórica OOS pobre (45.8%): no conviene operar esta moneda
+XRPUSDT,1.2498,ESPERAR,0.4411,24,-0.81,-1.01,1.22808037,1.19626 – 1.29713,MUY BAJA,51.8,"atr rel pct alcista, kaufman eff alcista, anchura Bollinger alcista",-0.00101,señal débil (P(alza)=44% cerca de 50%) · exactitud histórica OOS pobre (51.8%): no conviene operar esta moneda
+ETHUSDT,2246.45,ESPERAR,0.4901,24,-0.12,-0.32,2219.58199797,2149.47 – 2346.43,BAJA,52.2,"mom z 72 alcista, atr rel pct alcista, rv ratio long alcista",-0.00126,señal débil (P(alza)=49% cerca de 50%)
+LINKUSDT,11.49,ESPERAR,0.4725,24,-0.26,-0.46,11.29146868,10.8807 – 12.1434,MEDIA,55.0,"atr rel pct alcista, kaufman eff alcista, mom z 24 alcista",-0.00323,señal débil (P(alza)=47% cerca de 50%)
+ADAUSDT,0.1926,ESPERAR,0.4358,24,-0.89,-1.09,0.1875974,0.182121 – 0.202881,BAJA,52.8,"atr rel pct alcista, rv ratio long bajista, anchura Bollinger alcista",-0.00436,señal débil (P(alza)=44% cerca de 50%)
+DOGEUSDT,0.0754,VENDER,0.4111,24,-1.31,-1.51,0.0735821,0.0713046 – 0.0791193,MEDIA,54.3,"atr rel pct alcista, mom z 72 alcista, rv ratio long bajista",-0.01056,"P(alza 24h)=41%, retorno esperado neto -1.51%"
