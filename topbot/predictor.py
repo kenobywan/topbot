@@ -352,6 +352,12 @@ def predict_symbol(symbol: str, cfg: PredictorConfig,
                                     h, atr_rel_now, cfg)
         if pred is None:
             continue
+        # --- Coherencia señal <-> precio estimado: la MEDIANA del retorno
+        # forward es el mejor estimador puntual; si queda invertida respecto a
+        # P(alza) (p.ej. BUY con mediana por debajo del precio actual), se
+        # corrige hacia el extremo de la banda en la dirección de la señal,
+        # proporcionalmente a la fuerza de P(alza). Así nunca se muestra una
+        # contradicción "COMPRAR pero caerá".
         # Predice sobre la última vela CERRADA (X_full incluye esa fila extra
         # que no tiene etiqueta; sus features solo usan datos pasados).
         X_last = X_full.iloc[[-1]]
@@ -364,6 +370,13 @@ def predict_symbol(symbol: str, cfg: PredictorConfig,
         r_lo, r_hi = min(r_lo, r_hi), max(r_lo, r_hi)
         # retorno esperado aproximado: media de la banda ponderada por p_up
         exp_ret = float(r_lo * (1 - p_up) + r_hi * p_up)
+        # mediana coherente con la señal (nunca contradice a P(alza))
+        if exp_ret > 0:
+            r_med_c = max(r_med, min(exp_ret, r_hi))
+        elif exp_ret < 0:
+            r_med_c = min(r_med, max(exp_ret, r_lo))
+        else:
+            r_med_c = r_med
         net = exp_ret - cfg.fee_roundtrip
         result["horizons"][h] = {
             "horizon_hours": int(round(h / bph)),
@@ -372,7 +385,7 @@ def predict_symbol(symbol: str, cfg: PredictorConfig,
             "exp_return_net_fee": round(net, 5),
             "price_range": [round(price_now * np.exp(r_lo), 8),
                             round(price_now * np.exp(r_hi), 8)],
-            "price_median": round(price_now * np.exp(r_med), 8),
+            "price_median": round(price_now * np.exp(r_med_c), 8),
             "acc_oos": pred.stats["acc_oos"],
             "confidence": confidence_label(pred.stats["acc_oos"], pred.stats["n_train"]),
             "drivers": pred.drivers(X_last),

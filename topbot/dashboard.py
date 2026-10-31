@@ -227,7 +227,36 @@ def render_html(results: list[dict], dfs: dict[str, pd.DataFrame],
                                  text=[_fmt_price(p_med)], textposition="top right",
                                  showlegend=False), row=1, col=1)
 
-        fig.update_layout(template="plotly_white", height=460, margin=dict(l=40, r=20, t=60, b=30),
+        # --- Niveles de decisión para compra/venta MANUAL en spot ---------
+        # soportes/resistencias recientes (pivot highs/lows de las últimas velas)
+        win = min(len(d), 120)
+        dd = d.iloc[-win:]
+        highs_l, lows_l = dd["high"].values, dd["low"].values
+        piv_hi = [highs_l[j] for j in range(2, win - 2)
+                  if highs_l[j] == max(highs_l[max(0, j - 2):j + 3])]
+        piv_lo = [lows_l[j] for j in range(2, win - 2)
+                  if lows_l[j] == min(lows_l[max(0, j - 2):j + 3])]
+        res = float(np.median(piv_hi)) if piv_hi else float(dd["high"].max())
+        sup = float(np.median(piv_lo)) if piv_lo else float(dd["low"].min())
+        atr_h = float(abs(np.log(max(p_hi, 1e-12) / max(p_now, 1e-12))
+                          - np.log(max(p_lo, 1e-12) / max(p_now, 1e-12))) / 2.0
+                      * p_now / max(fut, 1))  # ancho medio de banda por vela
+        buy_zone = p_med - 0.5 * atr_h * np.sqrt(fut) * (1 - prim["p_up"])
+        sell_stop = sup - 1.5 * atr_h if p_now <= res else p_now * (1 - 0.03)
+        take_profit = p_med + 1.0 * atr_h * np.sqrt(fut)
+        lvl_styles = [
+            (res,  "#8a6df0", "R resistencia"),
+            (sup,  "#f0a202", "S soporte"),
+            (take_profit, "#16c784", "TP objetivo"),
+            (sell_stop,   "#ea3943", "SL stop"),
+        ]
+        for val, ccol, lbl in lvl_styles:
+            fig.add_hline(y=float(val), line=dict(color=ccol, width=1.2, dash="dot"),
+                          annotation_text=f"{lbl} {_fmt_price(float(val))}",
+                          annotation_position="right",
+                          annotation_font=dict(size=10, color=ccol), row=1, col=1)
+
+        fig.update_layout(template="plotly_white", height=460, margin=dict(l=40, r=110, t=60, b=30),
                           xaxis_rangeslider_visible=False,
                           title=dict(text=(
                               f"<b>{sym}</b> — {r['action']} · P(alza {prim['horizon_hours']}h)="
@@ -235,7 +264,17 @@ def render_html(results: list[dict], dfs: dict[str, pd.DataFrame],
                               f"· confianza {prim['confidence']}"), font=dict(size=14)))
         div = fig.to_html(full_html=False, include_plotlyjs=False,
                          config={"displaylogo": False})
-        figs_html.append(f'<div class="coin" id="chart-{i}">{div}<p class="reason">{r["reason"]}</p></div>')
+        # Tarjeta de niveles accionables bajo el gráfico
+        card = (
+            f'<div class="levels">'
+            f'<span><b>Zona de compra</b>: {_fmt_price(float(buy_zone))} – {_fmt_price(float(p_med))}</span>'
+            f'<span><b>Objetivo (TP)</b>: {_fmt_price(float(take_profit))}</span>'
+            f'<span><b>Stop (SL)</b>: {_fmt_price(float(sell_stop))}</span>'
+            f'<span><b>Soporte</b>: {_fmt_price(sup)} · <b>Resistencia</b>: {_fmt_price(res)}</span>'
+            f'</div>'
+        )
+        figs_html.append(f'<div class="coin" id="chart-{i}">{div}{card}'
+                         f'<p class="reason">{r["reason"]}</p></div>')
 
     html = f"""<!doctype html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -257,6 +296,9 @@ def render_html(results: list[dict], dfs: dict[str, pd.DataFrame],
  .hl{{color:#7a5cff;font-size:11px}}
  .coin{{background:#fff;border-radius:12px;margin-top:22px;padding:8px 12px;
         box-shadow:0 2px 10px rgba(16,40,80,.08)}}
+ .levels{{display:flex;flex-wrap:wrap;gap:8px 18px;padding:6px 12px 2px;font-size:12px;
+        color:#1c2733;background:#f0f6ff;border-radius:8px;margin:0 4px 6px}}
+ .levels span{{white-space:nowrap}}
  .reason{{color:#41506a;font-size:12px;padding:0 12px 8px}}
  footer{{text-align:center;color:#8a97ab;font-size:11px;padding:26px}}
 </style></head><body>
