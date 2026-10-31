@@ -226,8 +226,15 @@ def load_dataset(symbol: str = "BTCUSDT", interval: str = "1h",
         if cache is not None and len(cache) > 500:
             log.info("Modo offline: usando caché (%d velas)", len(cache))
             return prepare(cache, interval)
-        log.info("Modo offline sin caché: generando datos sintéticos")
-        return prepare(synthetic_ohlcv(n=min(days * 24, 8000), interval=interval),
+        # seed derivado del símbolo -> cada moneda tiene su propia serie sintética
+        # (hash() de str no es estable entre procesos: usamos sha1 determinista)
+        import hashlib
+        digest = int(hashlib.sha1(symbol.encode()).hexdigest(), 16)
+        seed = digest % 10_000 + 1
+        base_price = {"BTCUSDT": 30_000.0}.get(symbol, 100.0 * (digest % 97 + 1))
+        log.info("Modo offline sin caché: generando datos sintéticos (seed=%d)", seed)
+        return prepare(synthetic_ohlcv(n=min(days * 24, 8000), interval=interval,
+                                       seed=seed, start_price=base_price),
                        interval)
 
     path = _cache_path(cfg)

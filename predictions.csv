@@ -1,0 +1,4 @@
+moneda,precio_actual,accion,p_alza,horizon_h,retorno_esperado_%,retorno_neto_%,precio_estimado,rango_p20_p80,confianza,acc_oos_%,score,motivo
+BTCUSDT,82124.22705533,ESPERAR,0.4798,24,0.7,0.5,82585.05145383,81851.1 – 83629.6,ALTA,83.9,0.00498,señal débil (P(alza)=48% cerca de 50%)
+ETHUSDT,82124.22705533,ESPERAR,0.4798,24,0.7,0.5,82585.05145383,81851.1 – 83629.6,ALTA,83.9,0.00498,señal débil (P(alza)=48% cerca de 50%)
+SOLUSDT,82124.22705533,ESPERAR,0.4798,24,0.7,0.5,82585.05145383,81851.1 – 83629.6,ALTA,83.9,0.00498,señal débil (P(alza)=48% cerca de 50%)
