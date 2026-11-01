@@ -661,7 +661,9 @@ def refinar_con_okx(m):
     # nunca (se sustituyo por _bonus_4h_real con condicion "activo") pero seguia
     # definido: una regla duplicada sin "activo" que invitaba a reutilizarla por
     # error y volver a introducir el doble conteo. Eliminada.
-    e4_new = _bonus_4h_real(r4_new, r_new, activo_new)
+    # regla "tendencia" tambien para el 4h (simetria con _pts_rsi1h): sin
+    # tend_new, una bajada sostenida regalaba +8 "marco mayor" al refinar en vivo
+    e4_new = _bonus_4h_real(r4_new, r_new, activo_new, tend_new)
     # lado viejo del delta: los puntos exactos que el cribado SUMO/RESTO por RSI
     # (incluye los negativos: "_b_rsi" solo guarda el bono positivo) y por 4h.
     r_viejo = m.get("rsi")
@@ -862,12 +864,24 @@ def _pts_rsi1h(r, activo=True, tendencia=None):
     return 0
 
 
-def _bonus_4h_real(r4, r1h, activo=True):
+# FALLO CORREGIDO (simetria con el RSI 1h): el RSI 4h se anotaba como "marco
+# mayor" incluso cuando su extremo era solo la MISMA tendencia limpia que ya
+# describia el RSI 1h. Ejemplo medido con velas EN VIVO: BTC bajando -> RSI 1h
+# 43 (anulado por tendencia) pero RSI 4h 34 sumaba +8 "sobreventa en marco
+# mayor": el marcador regalaba exactamente el bono que la regla anterior acababa
+# de quitar, y al reves en subidas (-8 fantasma). Ahora el extremo del 4h solo
+# puntua si va CONTRA la tendencia (bono legitimo: correccion comprable / rebote
+# agotado); a favor de la tendencia es inercia y aporta 0.
+def _bonus_4h_real(r4, r1h, activo=True, tendencia=None):
     """Bono/penalizacion del RSI 4h, SOLO si es un marco realmente distinto del 1h."""
     if r4 is None or (r1h is not None and abs(r4 - r1h) < 1e-9):
         return 0
     if not activo:
         return 0
+    if r4 <= 30 and tendencia == -1:
+        return 0     # sobreventa 4h EN UNA BAJADA: es la caida, no el suelo
+    if r4 >= 70 and tendencia == 1:
+        return 0     # sobrecompra 4h EN UNA SUBIDA: es la fuerza, no el techo
     return 8 if r4 <= 30 else (-8 if r4 >= 70 else 0)
 
 
@@ -940,12 +954,22 @@ def _pts_proximidad_sr(sops, ress, precio_ref=None):
     sin él se conservan los umbrales absolutos de siempre).
     """
     pts, raz = 0, []
-    # escala tipica: distancia minima entre soporte y resistencia de la ventana
+    # FALLO CORREGIDO (escalado a medias): la "escala tipica" se calculaba SOLO
+    # si existian soporte Y resistencia por debajo/encima del precio. En una
+    # serie lateral perfecta el precio queda PEGADO al maximo y al minimo del
+    # rango: los pivotes caen fuera de las bandas de exclusion y solo existe un
+    # lado (p.ej. resistencia a +0.01%). Sin escala, los umbrales absolutos
+    # ("inmediato <=1.5%") se disparaban con ruido de redondeo y una moneda
+    # totalmente quieta salia VENTA por pura aritmetica del pivote (medido: nota
+    # 44/VENTA en una lateral de ±0.01%). Ahora la escala se mide SIEMPRE con el
+    # ancho real del rango 7d de la ventana (precio_ref), aunque solo haya un
+    # lado de niveles.
     rango_sr = None
-    if sops and ress and precio_ref:
-        ancho = abs(ress[0]["dist"]) + abs(sops[0]["dist"])
-        if ancho < 3:                      # niveles muy juntos: serie comprimida
-            rango_sr = max(ancho, 0.2)
+    if precio_ref and (sops or ress):
+        todos = [n["dist"] for n in (sops or [])] + [n["dist"] for n in (ress or [])]
+        ancho_rango = (max(todos) - min(todos)) if todos else None
+        if ancho_rango is not None and ancho_rango < 3:   # rango comprimido: serie plana
+            rango_sr = max(ancho_rango, 0.2)
     umbral_cercano = min(2.0, max(0.6, (rango_sr or 4) * 0.5)) if rango_sr else 2.0
     umbral_inmediato = min(1.5, max(0.4, (rango_sr or 3) * 0.4)) if rango_sr else 1.5
     umbral_lejano = max(4.0, (rango_sr or 8) * 1.2) if rango_sr else 4.0
@@ -1491,8 +1515,16 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
         else:
             raz.append(f"RSI {r:.0f}: zona neutral")
     if r4h is not None and abs(r4h - (r or -99)) > 1e-9:
+        # el TEXTO sigue la nueva regla de _bonus_4h_real: un extremo del 4h a
+        # favor de la tendencia es inercia (no puntua) y no debe anunciarse como
+        # senal de "marco mayor"
+        elif_ok = _bonus_4h_real(r4h, r, activo, tend_txt)
         if not activo:
             pass   # serie plana: el 4h tampoco es señal (igual que _bonus_4h_real)
+        elif r4h >= 70 and elif_ok == 0:
+            raz.append(f"RSI 4h en {r4h:.0f}: sobrecompra EN PLENA SUBIDA (fortaleza, no es techo)")
+        elif r4h <= 30 and elif_ok == 0:
+            raz.append(f"RSI 4h en {r4h:.0f}: sobreventa EN PLENA BAJADA (caída en curso, no es suelo)")
         elif r4h >= 70:
             raz.append(f"RSI 4h en {r4h:.0f}: sobrecompra en marco mayor")
         elif r4h <= 30:
@@ -1533,10 +1565,13 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
             raz.append("🚀 Despertar: rompe HOY al alza un rango comprimido de varios días")
         elif precio < lo_p * 0.995 and comp < 0.12 and (ch24 or 0) < -1:
             raz.append("Ruptura bajista HOY del rango de varios días")
-    if pos_rango is not None:
+    if pos_rango is not None and activo:
         # el texto sigue la MISMA logica condicional que _puntua_cribo (antes
         # describia "barato/compra" en suelos con tendencia bajista, justo lo
-        # que el marcador ya no premia desde la correccion de la inversion)
+        # que el marcador ya no premia desde la correccion de la inversion; y
+        # desde la ultima correccion el bloque entero exige movimiento real: en
+        # una serie plana la posicion en el rango es ruido de pivote y no se
+        # menciona)
         alc = bool(sma24 and sma72 and precio > sma24 > sma72)
         baj = bool(sma24 and sma72 and precio < sma24 < sma72)
         if pos_rango <= 20:
@@ -1552,9 +1587,6 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
             if alc and (mh is not None and mh[0] > 0):
                 raz.append(f"Precio rompiendo el máximo semanal ({pos_rango:.0f}%) con momentum: "
                            "fortaleza, seguir la subida")
-            elif not activo:
-                raz.append(f"Precio en el {pos_rango:.0f}% del rango 7d de una serie casi plana: "
-                           "techo sin señal real de agotamiento")
             else:
                 raz.append(f"Precio en el {pos_rango:.0f}% del rango 7d (cerca del máximo) con "
                            "dinamica en contra: riesgo de techo")
@@ -1579,7 +1611,7 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
     p3, r3 = _pts_persecucion(ch3d, precios)
     if r3:
         raz.append(r3)
-    bono = max(0, _pts_rsi1h(r, activo, tend_txt)) + max(0, _bonus_4h_real(r4h, r, activo))
+    bono = max(0, _pts_rsi1h(r, activo, tend_txt)) + max(0, _bonus_4h_real(r4h, r, activo, tend_txt))
     if pos_rango is not None and pos_rango <= 20:
         if baj or (mh is not None and mh[0] < 0):
             pass                     # cuchillo: el marcador no da bono de rango
@@ -1729,11 +1761,16 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     # 'tend_local' y el bono guardado en "_b_rsi" no cuadraba con lo que sumaba
     # el cribado (_puntua_cribo si pasa la tendencia) -> deltas falsos al refinar.
     b_rsi = max(0, _pts_rsi1h(r, activo_cribado, tend_local))
-    b_rsi4 = _bonus_4h_real(r4h, r, activo_cribado)
-    if pos_rango is not None and pos_rango <= 20:
+    b_rsi4 = _bonus_4h_real(r4h, r, activo_cribado, tend_local)
+    # FALLO CORREGIDO (espejo del cribado): 'pos_rango' se evaluaba SIN la
+    # condicion de movimiento real. En una serie lateral el precio queda clavado
+    # en el minimo del rango por redondeo y aqui se guardaba b_rango=6/-0 como
+    # si fuera un dip legitimo: al refinar en vivo, delta sumaba ese bono que el
+    # cribado (que ahora exige 'activo') nunca concedio -> puntos fantasma.
+    if pos_rango is not None and activo_cribado and pos_rango <= 20:
         if tendencia_baj_local or (mh is not None and mh[0] < 0):
             b_rango = 0
-        elif activo_cribado and tendencia_alc_local:
+        elif tendencia_alc_local:
             b_rango = 12
         else:
             b_rango = 6
@@ -1859,7 +1896,7 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
     puntos += _pts_rsi1h(r, activo, tend)
     e4 = 0
     if r4h is not None and abs(r4h - (r or -99)) > 1e-9:
-        e4 = _bonus_4h_real(r4h, r, activo)
+        e4 = _bonus_4h_real(r4h, r, activo, tend)
         puntos += e4
     if sma24 and sma72:
         # FALLO CORREGIDO (regla perdida): al reescribir el bloque del cruce de
@@ -1899,28 +1936,33 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
             puntos += 10
         elif precio < lo_prev * 0.995 and compresion < 0.12 and (ch24 or 0) < -1:
             puntos -= 8
-    if pos_rango is not None:
+    if pos_rango is not None and activo:
         # FALLO CORREGIDO (inversion): en tendencia, estar en el maximo semanal
         # es FORTALEZA (breakout) y estar en el minimo es DEBILIDAD (el suelo no
         # llega). Antes se premiaba comprar suelos (-20% del rango) y castigar
         # techos (+85%) sin mirar si habia impulso detras: el resultado era
         # vender subidas sanas y comprar caidas navaja. Ahora el extremo solo
         # puntua segun la direccion del momentum: a favor suma, en contra resta.
+        # FALLO CORREGIDO (ruido de pivote en series planas): la regla seguia
+        # activa cuando 'activo' es False. En una serie lateral perfecta el
+        # precio queda clavado en el MINIMO del rango por puro redondeo (oscila
+        # ±0.01%), y recibia -6 "cuchillo cayendo" + el extra de -10 del bloque
+        # siguiente: nota 44/VENTA para una moneda que NO SE MUEVE. Sin
+        # movimiento real no hay ruptura ni suelo: la posicion en el rango es
+        # artefacto de la medida, igual que ya ocurre con RSI y MACD.
         if pos_rango <= 20:
             if tendencia_baj or (mh is not None and mh[0] < 0):
                 puntos -= 6   # suelo con viento en contra: cuchillo, no chollo
-            elif activo and tendencia_alc:
+            elif tendencia_alc:
                 puntos += 12; b_rango = 12   # retroceso dentro de tendencia alcista: dip valido
             else:
                 puntos += 6; b_rango = 6     # suelo lateral barato: compra moderada
         elif pos_rango >= 85:
             if tendencia_alc and (mh is not None and mh[0] > 0):
                 puntos += 6   # rompiendo maximos con momentum: seguir la fuerza
-            elif not activo:
-                pass          # techo de una serie plana: no es señal de venta
             else:
                 puntos -= 12  # techo con dinamica en contra: recortar
-    if pos_rango is not None and pos_rango >= 85 and mh is not None and mh[0] < 0:
+    if pos_rango is not None and activo and pos_rango >= 85 and mh is not None and mh[0] < 0:
         puntos -= 10
     puntos += _pts_proximidad_sr(sops, ress, precio_ref=precio)[0]
     if ch30 is not None and ch24 is not None:
@@ -2120,7 +2162,7 @@ def confirmar_candidatas(max_n=16):
                 tend_v_rt = (1 if (s24v and s72v and pr and pr > s24v > s72v) else
                              -1 if (s24v and s72v and pr and pr < s24v < s72v) else None)
             pts_rsi_viejo = _pts_rsi1h(m.get("rsi"), bool(m.get("_activo", True)), tend_v_rt)
-            delta_rt = ((_pts_rsi1h(r_rt, activo_rt, tend_rt) + _bonus_4h_real(rsi(cierres[3::4]), r_rt, activo_rt)
+            delta_rt = ((_pts_rsi1h(r_rt, activo_rt, tend_rt) + _bonus_4h_real(rsi(cierres[3::4]), r_rt, activo_rt, tend_rt)
                          + _pts_macd1h(mh_rt, r_rt, activo_rt))
                         - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, m.get("rsi"), bool(m.get("_activo", True)))))
             if m.get("okx_vivo"):
