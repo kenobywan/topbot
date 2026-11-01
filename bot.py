@@ -210,14 +210,21 @@ def _demo_klines(url):
     if not row:
         return None
     serie = _serie_sintetica(_DEMO_PERFIL.get(row[0], "ruido"), n=1000)
-    escala = row[4] / serie[-1]
+    # FALLO CORREGIDO (demo sin mechas ni volumen): las velas se generaban con
+    # h=l=max(o,cierre)*1.002 y v=0, de modo que sr_por_mechas() no encontraba
+    # NINGUN pivote (todos los extremos coincidian) y el flujo de capital salia
+    # siempre 0: el refinado EN VIVO del demo nunca ejercitaba las reglas de
+    # S/R, libro ni flujo — exactamente las que mas fallaban en produccion.
+    # Ahora cada vela tiene mecha alta/baja y volumen USD deterministas.
+    rnd_v = random.Random(7 + len(sim))
     out = []
     for i, c in enumerate(serie):
         px = c * escala
         o = serie[i - 1] * escala if i else px
-        h = max(o, px) * 1.002
-        l = min(o, px) * 0.998
-        v = 1000.0
+        cuerpo_alto, cuerpo_bajo = max(o, px), min(o, px)
+        h = cuerpo_alto * (1 + abs(rnd_v.gauss(0, 0.003)) + 0.0005)
+        l = cuerpo_bajo * (1 - abs(rnd_v.gauss(0, 0.003)) - 0.0005)
+        v = 50_000 + abs(rnd_v.gauss(0, 20_000))          # volumen USD por hora
         out.append([i, f"{o:.8f}", f"{h:.8f}", f"{l:.8f}", f"{px:.8f}", f"{v:.2f}"])
     if "/market/candles" in url or "bar=" in url:      # formato OKX: mas viejo primero igual, pero al reves
         okx = [[f"{k[0]}", k[1], k[2], k[3], k[4], k[5], "0", "0"] for k in out]
@@ -243,7 +250,18 @@ def _demo_http_json(url):
         ts = [[int(time.time() - (2200 - i) * 3600) * 1000, p] for i, p in enumerate(prec)]
         vols = [[ts[i][0], 1e6 + (i % 50) * 5e4] for i in range(len(ts))]
         return {"prices": ts, "total_volumes": vols, "market_caps": ts}
-    return {[]} if "candles" in url else None
+    # FALLO CORREGIDO (crash en el demo): {[]} es un DICCIONARIO con una lista
+    # como clave -> TypeError: unhashable type 'list'. Rompia silenciosamente
+    # (capturado por except) todas las llamadas OKX de velas que no coincidian
+    # con un simbolo demo, dejando el refinado en vivo a ciegas. Se devuelve una
+    # respuesta de velas generica cuando la URL pide candles; si no, None.
+    if "candles" in url or "klines" in url:
+        kl = _demo_klines(url)
+        if kl is not None:
+            return kl
+        okx = [["0", "1", "1.01", "0.99", "1", "1000", "0", "0"] for _ in range(300)]
+        return {"data": okx}
+    return None
 
 
 # ----------------------------- Indicadores ------------------------------
@@ -452,10 +470,19 @@ def velas_ohlc_normalizadas(simbolo, n=300, precio_ref=None):
         highs, lows, cierres = v[0], v[1], v[2]
         if not precio_ref:
             return v
-        # coherencia de ESCALA: todo el periodo debe caber cerca del precio real
-        # (un contrato multiplexado queda fuera en cuanto se mira el maximo/mínimo)
+        # FALLO CORREGIDO (rechazo por escala mal medida): se comparaba el rango
+        # de las 300 velas contra el max/min del SPARKLINE de CoinGecko (solo 7
+        # dias). Una moneda que hizo +80% en 30d y luego lateraliza tiene un
+        # sparkline plano: la condicion mx/mn < 3 fallaba siempre y el refinado
+        # EN VIVO se saltaba en TODAS esas monedas (oculto en el demo porque
+        # ahi sparkline y velas salen de la misma serie; visible en red real).
+        # La coherencia de escala solo necesita el PRECIO REAL: si alguna vela
+        # esta al menos 4x por encima del precio, es otro contrato (multiplexado)
+        # o una escala distinta -> se descarta esa fuente.
         mx, mn = max(highs), min(lows)
-        if mn <= precio_ref * 1.02 and mx >= precio_ref * 0.98 and mn > 0 and mx / mn < 3:
+        if mn <= precio_ref * 1.02 and mx >= precio_ref * 0.98 \
+                and mn > 0 and mx / mn < 5 and mx <= precio_ref * 4 \
+                and mn >= precio_ref / 4:
             return v
     return None
 
@@ -704,7 +731,12 @@ def refinar_con_okx(m):
     # sumaba "_b_rango_dip" (que en el cribado ya entra crudo) y el MACD sin la
     # condicion "activo": con velas laterales en vivo exceso_new quedaba 0 y el
     # delta devolvia hasta 20 pts recortados legalmente por el cribado.
-    bono_caida_new = (b_rsi_new_pos + max(0, e4_new)
+    # FALLO CORREGIDO (termino fantasma): "b_rsi_new_pos" era una variable local
+    # que ya NO se usaba en la formula; el termino real es max(0, _pts_rsi1h(...)),
+    # identico al lado viejo y al del cribado. Quedar fuera hacia que el tope del
+    # refinado midiera un bono incompleto -> deltas falsos de hasta +20 pts al
+    # refinar monedas con RSI extremo legitimo (compraba navajas en vivo otra vez).
+    bono_caida_new = (max(0, _pts_rsi1h(r_new, activo_new, tend_new)) + max(0, e4_new)
                       + m.get("_b_rango_dip", 0)
                       + max(0, _pts_macd1h(mh_new, r_new, activo_new)))
     exceso_new = max(0, bono_caida_new - TOPE_BONO_CAIDA)
@@ -1640,21 +1672,29 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
     p3, r3 = _pts_persecucion(ch3d, precios)
     if r3:
         raz.append(r3)
-    bono = max(0, _pts_rsi1h(r, activo, tend_txt)) + max(0, _bonus_4h_real(r4h, r, activo, tend_txt))
-    if pos_rango is not None and pos_rango <= 20:
-        if baj or (mh is not None and mh[0] < 0):
-            pass                     # cuchillo: el marcador no da bono de rango
+    # FALLO CORREGIDO (bono fantasma en el texto): esta replica del tope ⚖️ tenia
+    # los componentes DUPLICADOS y sin las condiciones del cribado: sumaba el
+    # bono 4h dos veces, el rango sin exigir 'activo' ni anularlo con MACD
+    # negativo, y un termino extra de 4h sin tendencia. Resultado: el aviso
+    # "bono limitado a +22 (-N pts)" mostraba un N MAYOR que el recorte real
+    # aplicado por _puntua_cribo (hasta -14 pts de mentira). Ahora se re-mide
+    # exactamente con las mismas variables locales y funciones que usan los
+    # puntos: max(0,...) por componente, rango condicionado a activo/alc/baj/MACD
+    # y el bonus 4h con tend_txt.
+    alc_ = bool(sma24 and sma72 and precio > sma24 > sma72)
+    baj_ = bool(sma24 and sma72 and precio < sma24 < sma72)
+    b_rsi_txt = max(0, _pts_rsi1h(r, activo, tend_txt))
+    b_rsi4_txt = max(0, _bonus_4h_real(r4h, r, activo, tend_txt))
+    if pos_rango is not None and activo and pos_rango <= 20:
+        if baj_ or (mh is not None and mh[0] < 0):
+            b_rango_txt = 0          # cuchillo: el marcador no da bono de rango
         else:
-            bono += 12 if (activo and alc) else 6
+            b_rango_txt = 12 if alc_ else 6
+    else:
+        b_rango_txt = 0
     b_dip_txt = 10 if (ch30 is not None and ch24 is not None and ch30 > 5 and ch24 < -3) else 0
-    bono += b_dip_txt
-    # FALLO CORREGIDO (texto coherente con los puntos): el cribado (_puntua_cribo)
-    # topa el bono "por caer" INCLUYENDO los puntos del MACD horario cuando hay
-    # movimiento real. Aqui faltaba ese termino, asi que la nota mostraba el aviso
-    # "bono limitado a +22 (-N pts)" con un N distinto del recorte REALMENTE
-    # aplicado: el usuario veia una explicacion que no cuadraba con la puntuacion.
-    # Ahora se replican exactamente los mismos componentes y condiciones.
-    bono += max(0, _pts_macd1h(mh, r, activo))
+    b_macd_txt = max(0, _pts_macd1h(mh, r, activo))
+    bono = b_rsi_txt + b_rsi4_txt + b_rango_txt + b_dip_txt + b_macd_txt
     exc = max(0, bono - TOPE_BONO_CAIDA)
     if exc:
         raz.append(f"⚖️ Sobreventa + rango bajo + dip cuentan la misma caída: "
