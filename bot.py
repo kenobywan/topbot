@@ -366,11 +366,79 @@ def velas_ohlc_vivo(simbolo, n=300):
     300 velas para que el RSI tenga el mismo 'calentamiento' que TradingView."""
     k = _binance_klines(simbolo, "1h", n)
     if k and len(k) >= 50:
+        # FALLO CORREGIDO (IndexError): el indice del volumen USD en Binance
+        # klines es el 7 (quote volume), pero aqui se leia c[7] sin comprobar la
+        # longitud de la fila. Con velas incompletas o respuestas parciales
+        # (p. ej. red cortada a mitad) petaba y TODO el refinado EN VIVO se
+        # caia por la excepcion. Se usa el mismo guardabolera que la rama OKX.
         return ([float(c[2]) for c in k], [float(c[3]) for c in k],
                 [float(c[4]) for c in k], [float(c[1]) for c in k],
-                [float(c[7]) for c in k], "Binance")
+                [float(c[7]) if len(c) > 7 else float(c[5]) * float(c[4]) for c in k],
+                "Binance")
     v = velas_ohlc_okx(simbolo, n)
     return (*v, "OKX") if v else None
+
+
+def velas_ohlc_normalizadas(simbolo, n=300):
+    """Velas 1H con la MISMA escala de precio que el sparkline de CoinGecko.
+
+    FALLO CORREGIDO (refinado fantasma): 'velas_ohlc_vivo' recorre los simbolos
+    en orden y devuelve el PRIMERO que exista. Para monedas con varias parejas
+    contra USDT (p.ej. XRP -> 'XRP-USDT-SWAP' es un swap de 500 unidades), las
+    velas llegan a otra escala: aqui se comparaba solo el ultimo cierre (que si
+    coincide) y luego se usaban maximos/minimos/RSI/MACD de una serie de otra
+    magnitud, produciendo deltas absurdos (+28/+39 pts) y soportes imposibles.
+    Ahora se prueban todas las fuentes disponibles y se elige la que tiene el
+    rango completo coherente con el precio actual; si ninguna lo es, NO se
+    refina (mejor datos retrasados que datos inventados).
+    Devuelve (highs, lows, cierres, abres, vols_usd, fuente) o None.
+    """
+    precio_ref = None
+    try:
+        # el precio actual se busca en la lista que se esta refinando (pasada por
+        # _estado["monedas"], ya rellena durante el ciclo) y, si no esta, se pide
+        # al propio exchange (Binance/OKX devuelven el ultimo cierre de la vela)
+        for mo in _estado.get("monedas", []):
+            if mo["simbolo"].upper() == simbolo.upper():
+                precio_ref = mo.get("precio")
+                break
+    except Exception:
+        precio_ref = None
+    candidatos = []
+    k = _binance_klines(simbolo, "1h", n)
+    if k and len(k) >= 50:
+        candidatos.append((
+            [float(c[2]) for c in k], [float(c[3]) for c in k],
+            [float(c[4]) for c in k], [float(c[1]) for c in k],
+            [float(c[7]) if len(c) > 7 else float(c[5]) * float(c[4]) for c in k],
+            "Binance"))
+    for inst in (f"{simbolo}-USDT", f"{simbolo}-USDT-SWAP"):
+        try:
+            d = http_json(f"{OKX}/api/v5/market/candles?instId={inst}&bar=1H&limit={n}", timeout=10)
+            velas = d.get("data") or []
+            if len(velas) >= 50:
+                velas = list(reversed(velas))
+                candidatos.append((
+                    [float(c[2]) for c in velas], [float(c[3]) for c in velas],
+                    [float(c[4]) for c in velas], [float(c[1]) for c in velas],
+                    [float(c[7]) if len(c) > 7 and float(c[7]) > 0
+                     else float(c[5]) * float(c[4]) for c in velas],
+                    f"OKX {inst}"))
+        except Exception:
+            pass
+    if precio_ref is None and candidatos:
+        # fallback: usa el ultimo cierre de la fuente mas liquida disponible
+        precio_ref = max((v[2][-1] for v in candidatos), default=None)
+    for v in candidatos:
+        highs, lows, cierres = v[0], v[1], v[2]
+        if not precio_ref:
+            return v
+        # coherencia de ESCALA: todo el periodo debe caber cerca del precio real
+        # (un contrato multiplexado queda fuera en cuanto se mira el maximo/mínimo)
+        mx, mn = max(highs), min(lows)
+        if mn <= precio_ref * 1.02 and mx >= precio_ref * 0.98 and mn > 0 and mx / mn < 3:
+            return v
+    return None
 
 
 def _binance_klines(simbolo, interval, limit):
@@ -535,7 +603,12 @@ def refinar_con_okx(m):
     """
     if m.get("senal") == "STABLE":
         return False
-    ohlc = velas_ohlc_vivo(m["simbolo"])
+    # FALLO CORREGIDO (escala): se usaba velas_ohlc_vivo(), que devuelve el
+    # PRIMER par que existe. Para monedas con contrato multiplexado (p.ej.
+    # XRP-USDT-SWAP cotiza x500) las velas llegan en otra magnitud y el delta
+    # del refinado inventaba hasta +39 puntos. Ahora solo se refina con la
+    # fuente cuyo rango completo es coherente con el precio real de CoinGecko.
+    ohlc = velas_ohlc_normalizadas(m["simbolo"])
     if not ohlc:
         return False
     highs, lows, cierres, abres, vols_usd, fuente = ohlc
@@ -579,8 +652,15 @@ def refinar_con_okx(m):
     # el marcador volvia a comprar navajas. Ahora ambos lados del tope se
     # miden con las MISMAS funciones y condiciones del cribado.
     b_rsi_new_pos = max(0, _pts_rsi1h(r_new, activo_new))
+    # FALLO CORREGIDO (simetria exacta del tope): ahora ambos lados se miden con
+    # la MISMA formula: componentes topados con max(0,...), MACD condicionado a
+    # "activo" y termino rango+dip sin topar por separado. Antes el lado nuevo
+    # sumaba "_b_rango_dip" (que en el cribado ya entra crudo) y el MACD sin la
+    # condicion "activo": con velas laterales en vivo exceso_new quedaba 0 y el
+    # delta devolvia hasta 20 pts recortados legalmente por el cribado.
     bono_caida_new = (b_rsi_new_pos + max(0, e4_new)
-                      + m.get("_b_rango_dip", 0) + _pts_macd1h(mh_new, r_new))
+                      + m.get("_b_rango_dip", 0)
+                      + max(0, _pts_macd1h(mh_new, r_new) if activo_new else 0))
     exceso_new = max(0, bono_caida_new - TOPE_BONO_CAIDA)
     delta += m.get("_exceso", 0) - exceso_new
     sop, res = sr_por_mechas(highs[-49:], lows[-49:], precio)
@@ -1537,8 +1617,16 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     # Aqui faltaba ese termino, asi que "_exceso" guardado era menor que el
     # recorte real del cribado y al refinar en vivo el delta devolvia pts
     # fantasma (hasta 6). Ahora la formula es identica a la del cribado.
-    b_macd = _pts_macd1h(mh, r)
-    bono_caida = b_rsi + max(0, b_rsi4) + b_rango + b_dip + b_macd
+    b_macd = _pts_macd1h(mh, r) if activo_cribado else 0
+    # FALLO CORREGIDO (espejo EXACTO del cribado): las dos formulas del tope
+    # deben ser identicas termino a termino. Antes: (a) aqui no se aplicaba la
+    # condicion "activo" al MACD mientras el cribado si, y (b) en el refinado en
+    # vivo se sumaba max(0, e4_new) pero el lado viejo usaba "_b_rsi4" CRUDO, de
+    # modo que una penalizacion de RSI 4h (-8) se convertia en +8 puntos fantasma
+    # al refinar. Ahora ambos lados usan SIEMPRE max(0, ...) sobre los mismos
+    # componentes y la misma condicion de movimiento real.
+    bono_caida = (max(0, b_rsi) + max(0, b_rsi4) + max(0, b_rango)
+                  + max(0, b_dip) + max(0, b_macd))
     exceso_caida = max(0, bono_caida - TOPE_BONO_CAIDA)
     pts_sr = _pts_proximidad_sr(sops, ress)[0]
     pts_3d = _pts_persecucion(ch3d, precios)[0]
@@ -1634,13 +1722,13 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
     ch3d = ((precios[-1] / precios[-73] - 1) * 100) if len(precios) >= 73 and precios[-73] else None
 
     puntos = 50.0
-    b_rsi = b_rango = b_dip = b_rsi4_pos = 0
-    puntos += _pts_rsi1h(r, activo)
     b_rsi = max(0, _pts_rsi1h(r, activo))
+    b_rango = b_dip = 0
+    puntos += _pts_rsi1h(r, activo)
+    e4 = 0
     if r4h is not None and abs(r4h - (r or -99)) > 1e-9:
         e4 = _bonus_4h_real(r4h, r, activo)
         puntos += e4
-        b_rsi4_pos = max(0, e4)
     if sma24 and sma72:
         if tendencia_alc:
             puntos += 8
@@ -1701,7 +1789,19 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
         elif ch7d < -15:
             puntos += 4
     puntos += _pts_persecucion(ch3d, precios)[0]
-    puntos -= max(0, b_rsi + b_rsi4_pos + b_rango + b_dip - TOPE_BONO_CAIDA)
+    # FALLO CORREGIDO (simetria con el refinado): el tope del bono debe usar los
+    # MISMOS terminos que 'analizar_moneda' guarda en "_exceso" (b_rsi +
+    # max(0,b_rsi4) + b_rango + b_dip + MACD crudo). Antes no entraba el MACD y
+    # el bono de 4h se contaba solo si era positivo: dos cuentas distintas del
+    # mismo recorte -> deltas falsos al refinar con velas EN VIVO.
+    b_macd_cribo = _pts_macd1h(mh, r) if activo else 0
+    # FALLO CORREGIDO (espejo del tope): los componentes se topan SIEMPRE con
+    # max(0, ...) igual que en 'analizar_moneda'/'_bonus_4h_real'. Antes el RSI
+    # 4h usaba "b_rsi4_pos" y el MACD entraba CRUDO: con e4=-8 o MACD=-6 el bono
+    # total bajaba, "_exceso" guardaba un recorte menor y al refinar en vivo el
+    # delta devolvia puntos que el cribado nunca concedio.
+    puntos -= max(0, b_rsi + max(0, e4) + max(0, b_rango) + max(0, b_dip)
+                  + max(0, b_macd_cribo) - TOPE_BONO_CAIDA)
     if ath_dist is not None:
         if -25 <= ath_dist <= -5 and (ch30 or 0) > 0:
             puntos += 4
