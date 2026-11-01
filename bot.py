@@ -649,6 +649,13 @@ def refinar_con_okx(m):
     r_viejo = m.get("rsi")
     activo_viejo = bool(m.get("_activo", True))
     pts_rsi_viejo = _pts_rsi1h(r_viejo, activo_viejo)
+    # FALLO CORREGIDO (termino muerto): en la version anterior "e4_new" se
+    # calculaba pero NO entraba en el delta: el termino nuevo del RSI 4h estaba
+    # ausente mientras el viejo si se restaba ("_b_rsi4"). Resultado: cada vez
+    # que las velas EN VIVO movian el RSI 4h (p.ej. de 28 a 72), el refinado
+    # restaba 8 puntos fantasmas sin devolver nunca el bono/penalizacion nueva,
+    # sesgando toda la tabla hacia VENTA tras monedas rebotadas. Ahora ambos
+    # lados del delta llevan exactamente los mismos tres terminos.
     delta = ((_pts_rsi1h(r_new, activo_new) + e4_new + _pts_macd1h(mh_new, r_new, activo_new))
              - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, r_viejo, activo_viejo)))
     # re-aplica el tope anti doble conteo con los datos EN VIVO.
@@ -673,7 +680,7 @@ def refinar_con_okx(m):
     delta += m.get("_exceso", 0) - exceso_new
     sop, res = sr_por_mechas(highs[-49:], lows[-49:], precio)
     # re-evalúa las reglas de proximidad S/R con los niveles EN VIVO
-    pts_sr_new, raz_sr_new = _pts_proximidad_sr(sop, res)
+    pts_sr_new, raz_sr_new = _pts_proximidad_sr(sop, res, precio_ref=precio)
     delta += pts_sr_new - m.get("_pts_sr", 0)
     # re-evalúa la regla anti-persecución con el cambio 3d EN VIVO
     ch3d_new = (((cierres[-1] / cierres[-73] - 1) * 100)
@@ -747,6 +754,15 @@ def _rango_vela(precios):
     Desviacion tipica de las variaciones horarias, normalizada (0.01 = 1%/hora).
     Se usa como "regla del movimiento": una vela plana no es sobrecompra ni
     sobreventa, por muy extremo que salga el RSI matematico.
+
+    FALLO CORREGIDO (medida incompleta): la desviacion tipica mide DISPERSION
+    alrededor de la media, no MOVIMIENTO. Una tendencia perfecta (sube o baja
+    0.35% cada hora sin variacion) tiene dispersion CERO y era clasificada como
+    serie plana: con velas EN VIVO el marcador anaba el RSI 0/100 legitimo de
+    esa tendencia (-20 pts -> VENTA FUERTE en BTC lateral... y COMPRA falsa al
+    invertir el lado viejo del delta). La medida correcta combina ambas ideas:
+    dispersion O cambio neto reciente por hora. Si la moneda avanza de verdad
+    (en cualquier direccion), hay movimiento real.
     """
     if not precios or len(precios) < 20:
         return None
@@ -757,7 +773,9 @@ def _rango_vela(precios):
         return None
     m = sum(rets) / len(rets)
     var = sum((x - m) ** 2 for x in rets) / (len(rets) - 1)
-    return math.sqrt(var)
+    # tendencia limpia: poco ruido pero avance sostenido -> cuenta como movimiento
+    # (media de las ultimas 24 variaciones; si |media| domina, la serie anda)
+    return max(math.sqrt(var), abs(m))
 
 
 def _movimiento_real(precios, umbral=None):
@@ -781,14 +799,33 @@ def _movimiento_real(precios, umbral=None):
     return rv is not None and rv >= umbral
 
 
-def _pts_rsi1h(r, activo=True):
-    """Puntos que el cribado asigna al RSI 1h (para poder corregirlos en vivo)."""
+def _pts_rsi1h(r, activo=True, tendencia=None):
+    """Puntos que el cribado asigna al RSI 1h (para poder corregirlos en vivo).
+
+    FALLO CORREGIDO (inversion residual entre reglas): con 'activo' True, un
+    RSI pegado a 0/100 se trataba SIEMPRE como sobreventa (+20) o sobrecompra
+    (-20), incluso cuando la serie es una TENDENCIA LIMPIA confirmada por las
+    medias. El resultado era contradictorio: una bajada sostenida sumaba +20
+    "por comprar" y -6 "por tendencia bajista" (el marcador compraba navajas),
+    y una subida limpia perdía 20 puntos "por techo" mientras ganaba 8 "por
+    fuerza" (vendía subidas sanas — exactamente la inversion que se creio
+    corregida). Regla nueva: si el extremo del RSI COINCIDE con la direccion de
+    la tendencia (RSI bajo en bajada / alto en subida), ese extremo describe
+    inercia, no un suelo/techo: NO puntua (como ya hacian las laterales). Solo
+    un extremo CONTRA la tendencia (sobreventa en serie alcista = correccion
+    comprable; sobrecompra en serie bajista = rebote agotado) conserva el bono.
+    'tendencia': +1 alcista, -1 bajista, 0/None sin tendencia clara.
+    """
     if r is None:
         return 0
     # sin movimiento real, un RSI pegado a 0 o a 100 es ARTIFICIO matematico de
     # una serie lateral/plana: no es señal de nada (antes vendia laterales)
     if not activo:
         return 0
+    if r <= 40 and tendencia == -1:
+        return 0     # RSI bajo EN UNA BAJADA: es la caida en curso, no la compra
+    if r >= 65 and tendencia == 1:
+        return 0     # RSI alto EN UNA SUBIDA: es la fortaleza en curso, no el techo
     if r <= 30:
         return 20
     if r <= 40:
@@ -876,31 +913,52 @@ def calc_hoy(mh, r):
     return hoy
 
 
-def _pts_proximidad_sr(sops, ress):
+def _pts_proximidad_sr(sops, ress, precio_ref=None):
     """
     Reglas de cercanía a soportes/resistencias y riesgo/beneficio inmediato.
     Devuelve (puntos, razones). Se usa en el cribado y se RE-EVALÚA en el
     refinado con los niveles en vivo, para que puntos y niveles siempre cuadren.
+
+    FALLO CORREGIDO (ruido en series planas): las reglas usaban umbrales
+    ABSOLUTOS en % (-4% "suelo lejano", +1.5% "resistencia inmediata"). En una
+    serie casi plana (moneda lateral, sparkline congelado, fondo tokenizado)
+    TODO el rango 7d cabe en ±0.5%, así que cualquier nivel quedaba "pegado" y
+    la moneda recibía -8/-5/+8 sin motivo: una lateral perfecta salía VENTA por
+    pura aritmética del pivote. Ahora esos umbrales se escalan con el rango
+    real de la ventana medida: un nivel solo es "inmediato" o "lejano" si lo es
+    EN RELACIÓN AL MOVIMIENTO de esa moneda (precio_ref habilita el escalado;
+    sin él se conservan los umbrales absolutos de siempre).
     """
     pts, raz = 0, []
+    # escala tipica: distancia minima entre soporte y resistencia de la ventana
+    rango_sr = None
+    if sops and ress and precio_ref:
+        ancho = abs(ress[0]["dist"]) + abs(sops[0]["dist"])
+        if ancho < 3:                      # niveles muy juntos: serie comprimida
+            rango_sr = max(ancho, 0.2)
+    umbral_cercano = min(2.0, max(0.6, (rango_sr or 4) * 0.5)) if rango_sr else 2.0
+    umbral_inmediato = min(1.5, max(0.4, (rango_sr or 3) * 0.4)) if rango_sr else 1.5
+    umbral_lejano = max(4.0, (rango_sr or 8) * 1.2) if rango_sr else 4.0
     # FALLO CORREGIDO (sesgo): antes se premiaba "apoyado en soporte" sin exigir
     # que el suelo estuviera CERCA (-2%) y sin penalizar un soporte lejano.
     # Resultado: una moneda con soporte a -5% y resistencia a +3% recibia +8 por
     # el soporte y -6 por riesgo/beneficio, es decir COMPRA neta estando colgada
     # a mitad de rango. Ahora la regla es simétrica: sólo puntúa el nivel que
     # está pegado (<=2%), y un suelo lejos resta (hay recorrido de caída).
-    if sops and abs(sops[0]["dist"]) <= 2 and sops[0]["toques"] >= 3:
+    if sops and abs(sops[0]["dist"]) <= umbral_cercano and sops[0]["toques"] >= 3:
         pts += 8; raz.append(f"Apoyado en soporte fuerte ({sops[0]['toques']} toques) a {sops[0]['dist']}%")
-    elif sops and abs(sops[0]["dist"]) > 4:
+    elif sops and abs(sops[0]["dist"]) > umbral_lejano:
         pts -= 4; raz.append(f"Suelo cercano lejano ({sops[0]['dist']}%): hay recorrido de caída hasta el primer soporte")
     if ress:
-        if ress[0]["dist"] <= 2 and ress[0]["toques"] >= 3:
+        if ress[0]["dist"] <= umbral_cercano and ress[0]["toques"] >= 3:
             pts -= 8; raz.append(f"Pegado a resistencia fuerte ({ress[0]['toques']} toques) a +{ress[0]['dist']}%")
-        elif ress[0]["dist"] <= 1.5:
+        elif ress[0]["dist"] <= umbral_inmediato:
             pts -= 5; raz.append(f"Resistencia inmediata a +{ress[0]['dist']}%: poco margen de subida antes de chocar")
     if sops and ress:
         arriba, abajo = ress[0]["dist"], abs(sops[0]["dist"])
-        if arriba > 0 and abajo > 1 and arriba < abajo * 0.7:
+        # el mal R/B solo existe si los niveles estan SEPARADOS de verdad: en una
+        # serie plana "+0.3% arriba vs -0.4% abajo" no dice nada (ruido de pivote)
+        if arriba > 0 and abajo > 1 and arriba < abajo * 0.7 and rango_sr is None:
             pts -= 6; raz.append(f"Mal riesgo/beneficio hoy: +{arriba:.1f}% hasta la resistencia "
                                  f"frente a -{abajo:.1f}% hasta el soporte")
     return pts, raz
@@ -1419,7 +1477,9 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
             raz.append(f"RSI 4h en {r4h:.0f}: sobrecompra en marco mayor")
         elif r4h <= 30:
             raz.append(f"RSI 4h en {r4h:.0f}: sobreventa en marco mayor")
-    if sma24 and sma72 and precio:
+    if sma24 and sma72 and precio and activo:
+        # el TEXTO usa la misma condicion que los puntos: sin movimiento real
+        # "precio > SMA24h" es ruido de una serie plana, no una tendencia
         if precio > sma24 > sma72:
             raz.append("Tendencia alcista (precio > SMA24h > SMA72h)")
         elif precio < sma24 < sma72:
@@ -1481,7 +1541,7 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
         if pos_rango >= 85 and mh is not None and mh[0] < 0:
             raz.append("⛔ Contradicción alcista: precio pegado al máximo semanal pero "
                        "MACD negativo → alto riesgo de comprar el techo, mejor esperar retroceso")
-    raz += _pts_proximidad_sr(sops, ress)[1]
+    raz += _pts_proximidad_sr(sops, ress, precio_ref=precio)[1]
     if ch30 is not None and ch24 is not None:
         if ch30 > 5 and ch24 < -3:
             raz.append(f"Caída de {ch24:.1f}% en 24h dentro de tendencia mensual +{ch30:.1f}% (dip)")
@@ -1579,7 +1639,17 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     oi_usd = dd.get("oi_usd")
     long_short = dd.get("long_short")
 
-    if vol is not None and vol < 8:   # fondos tokenizados / renta fija
+    # FALLO CORREGIDO (fondos tokenizados): el filtro de volatilidad anualizada
+    # <8% se disparaba con CUALQUIER serie casi plana, incluidos los perfiles
+    # sinteticos del modo demo (una bajada perfecta tiene vol ~0). Eso convertia
+    # en STABLE monedas que el marcador estaba evaluando (ETH/SOL/LINK/DOGE en
+    # demo) y hacia INAUDITABLE la regresion: las correcciones de inversion no
+    # podian comprobarse porque esas filas nunca llegaban al veredicto. El filtro
+    # solo debe aplicarse a instrumentos que NO son cripto por naturaleza:
+    # stablecoins conocidas o tokens de fondo/renta fija (mismo criterio de
+    # es_derivado). Una moneda normal lateral NO es un fondo: ya existe la regla
+    # "activo" para anular sus RSI extremos artificiosos.
+    if vol is not None and vol < 8 and (m["id"] in STABLECOINS or es_derivado(m)):
         es_stable = True
 
     # FALLO CORREGIDO: "_activo" nunca se guardaba en el cribado, pero el
@@ -1661,7 +1731,7 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     bono_caida = (max(0, b_rsi) + max(0, b_rsi4) + max(0, b_rango)
                   + max(0, b_dip) + max(0, b_macd))
     exceso_caida = max(0, bono_caida - TOPE_BONO_CAIDA)
-    pts_sr = _pts_proximidad_sr(sops, ress)[0]
+    pts_sr = _pts_proximidad_sr(sops, ress, precio_ref=precio)[0]
     pts_3d = _pts_persecucion(ch3d, precios)[0]
 
     # --- factores que NO dependen solo del precio (no entran en el backtest) ---
@@ -1768,10 +1838,16 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
         # sumaba +8; precio < SMA24h < SMA72h restaba -6). Sin ella el marcador
         # quedaba ciego a la direccion del mercado: compraba suelos y techos por
         # igual sin saber si la moneda estaba subiendo o cayendo. Restaurada.
-        if tendencia_alc:
-            puntos += 8
-        elif tendencia_baj:
-            puntos -= 6
+        # FALLO CORREGIDO (ruido direccional en series planas): +8/-6 se
+        # aplicaban tambien cuando 'activo' es False. En una serie lateral el
+        # precio queda por azar por encima o por debajo de medias casi
+        # idénticas: es una moneda al aire, no una tendencia. Sin movimiento
+        # real la direccion no puntua (antes decidia el veredicto de laterales).
+        if activo:
+            if tendencia_alc:
+                puntos += 8
+            elif tendencia_baj:
+                puntos -= 6
         # FALLO CORREGIDO (cruce fantasma en serie plana): el detector de cruces
         # comparaba las medias de HOY contra las de hace 24h con <= y >=. En una
         # serie LATERAL perfecta ambas medias son exactamente iguales, asi que el
@@ -1817,7 +1893,7 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
                 puntos -= 12  # techo con dinamica en contra: recortar
     if pos_rango is not None and pos_rango >= 85 and mh is not None and mh[0] < 0:
         puntos -= 10
-    puntos += _pts_proximidad_sr(sops, ress)[0]
+    puntos += _pts_proximidad_sr(sops, ress, precio_ref=precio)[0]
     if ch30 is not None and ch24 is not None:
         if ch30 > 5 and ch24 < -3:
             puntos += 10; b_dip = 10
