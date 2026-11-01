@@ -1,5 +1,5 @@
 {
- "actualizado": "2026-11-01T01:27:14.855575+00:00",
+ "actualizado": "2026-11-01T01:35:01.098205+00:00",
  "monedas": [
   {
    "id": "virtual-protocol",
@@ -98,7 +98,7 @@
      "dist": 2.93
     }
    ],
-   "funding": -0.002252,
+   "funding": -0.002563,
    "oi_usd": null,
    "long_short": null,
    "_activo": true,
@@ -112,7 +112,7 @@
     "Ruptura bajista HOY del rango de varios días",
     "Precio en el 0% inferior del rango 7d PERO con inercia bajista: cuchillo cayendo, no suelo confirmado",
     "Pegado a resistencia fuerte (12 toques) a +0.86%",
-    "Funding ligeramente negativo (-0.002%/8h)"
+    "Funding ligeramente negativo (-0.003%/8h)"
    ],
    "liquidez_baja": false,
    "hoy": "desfavorable",
@@ -185,7 +185,7 @@
     "Ruptura bajista HOY del rango de varios días",
     "Precio en el 0% inferior del rango 7d PERO con inercia bajista: cuchillo cayendo, no suelo confirmado",
     "Pegado a resistencia fuerte (12 toques) a +0.86%",
-    "Confirmación 30d; tendencia diaria BAJISTA Y ACELERANDO (-7), presión taker 1.4 → ajuste -7 puntos (señal confirmada)"
+    "Confirmación 30d; tendencia diaria BAJISTA Y ACELERANDO (-7), presión taker 1.28 → ajuste -7 puntos (señal confirmada)"
    ],
    "liquidez_baja": false,
    "hoy": "desfavorable",
@@ -236,7 +236,7 @@
     }
    ],
    "resistencias": [],
-   "funding": -0.004297,
+   "funding": -0.003451,
    "oi_usd": null,
    "long_short": null,
    "_activo": true,
@@ -250,8 +250,8 @@
     "Precio rompiendo el máximo semanal (100%) con momentum: fortaleza, seguir la subida",
     "Suelo cercano lejano (-27.95%): hay recorrido de caída hasta el primer soporte",
     "+64.1% en 3 días con la subida aún ganando velocidad: tendencia viva, no se penaliza entrar",
-    "Funding ligeramente negativo (-0.004%/8h)",
-    "Confirmación 30d; tendencia diaria BAJISTA Y ACELERANDO (-7), presión taker 0.84 → ajuste -10 puntos (señal confirmada)"
+    "Funding ligeramente negativo (-0.003%/8h)",
+    "Confirmación 30d; tendencia diaria BAJISTA Y ACELERANDO (-7), presión taker 1.18 → ajuste -10 puntos (señal confirmada)"
    ],
    "liquidez_baja": false,
    "hoy": "desfavorable",
@@ -316,7 +316,7 @@
     "Precio rompiendo el máximo semanal (100%) con momentum: fortaleza, seguir la subida",
     "Suelo cercano lejano (-27.95%): hay recorrido de caída hasta el primer soporte",
     "+64.1% en 3 días con la subida aún ganando velocidad: tendencia viva, no se penaliza entrar",
-    "Confirmación 30d; tendencia diaria BAJISTA Y ACELERANDO (-7), presión taker 1.05 → ajuste -10 puntos (señal confirmada)"
+    "Confirmación 30d; tendencia diaria BAJISTA Y ACELERANDO (-7), presión taker 0.9 → ajuste -10 puntos (señal confirmada)"
    ],
    "liquidez_baja": false,
    "hoy": "desfavorable",
@@ -402,7 +402,7 @@
      "dist": 17.91
     }
    ],
-   "funding": 0.000682,
+   "funding": 0.001036,
    "oi_usd": null,
    "long_short": null,
    "_activo": false,
@@ -443,7 +443,7 @@
     }
    ],
    "resistencias": [],
-   "funding": 0.007509,
+   "funding": 0.007459,
    "oi_usd": null,
    "long_short": null,
    "_activo": false,
@@ -478,7 +478,7 @@
    "ath_dist": -20.0,
    "soportes": [],
    "resistencias": [],
-   "funding": 0.0052049999999999996,
+   "funding": 0.00513,
    "oi_usd": null,
    "long_short": null,
    "_activo": false,
@@ -519,7 +519,7 @@
     }
    ],
    "resistencias": [],
-   "funding": 0.006247,
+   "funding": 0.0063620000000000005,
    "oi_usd": null,
    "long_short": null,
    "_activo": false,

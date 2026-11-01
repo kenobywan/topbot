@@ -314,16 +314,19 @@ def velas_1h_okx(simbolo, n=120):
     A diferencia del sparkline de CoinGecko (que llega con ~1h de retraso),
     estas velas incluyen el movimiento de la última hora.
     Devuelve lista de cierres de antigua -> reciente, o None si no hay par.
+
+    FALLO CORREGIDO (muerto/riesgo): ya no se llama desde ningun sitio. Los dos
+    consumidores usaban esta funcion para re-medir RSI/MACD 'en vivo', pero
+    devolvía el PRIMER par que existe sin comprobar la magnitud de los precios
+    (contratos multiplexados como XRP-USDT-SWAP cotizan x500: misma serie, otra
+    escala -> indicadores de otra moneda). Se sustituyo por
+    'velas_ohlc_normalizadas', que solo acepta fuentes coherentes con el precio
+    real. Se conserva vacia y avisando para que cualquier llamada futura fallen
+    ruidosamente en lugar de reintroducir el bug de escala.
     """
-    for inst in (f"{simbolo}-USDT", f"{simbolo}-USDT-SWAP"):
-        try:
-            d = http_json(f"{OKX}/api/v5/market/candles?instId={inst}&bar=1H&limit={n}", timeout=10)
-            velas = d.get("data") or []
-            if len(velas) >= 50:
-                return [float(c[4]) for c in reversed(velas)]
-        except Exception:
-            pass
-    return None
+    raise RuntimeError(
+        "velas_1h_okx esta desactivada: no comprueba la escala del par. "
+        "Usa velas_ohlc_normalizadas() en su lugar.")
 
 
 def velas_diarias_okx(simbolo, n=220):
@@ -379,7 +382,7 @@ def velas_ohlc_vivo(simbolo, n=300):
     return (*v, "OKX") if v else None
 
 
-def velas_ohlc_normalizadas(simbolo, n=300):
+def velas_ohlc_normalizadas(simbolo, n=300, precio_ref=None):
     """Velas 1H con la MISMA escala de precio que el sparkline de CoinGecko.
 
     FALLO CORREGIDO (refinado fantasma): 'velas_ohlc_vivo' recorre los simbolos
@@ -391,19 +394,23 @@ def velas_ohlc_normalizadas(simbolo, n=300):
     Ahora se prueban todas las fuentes disponibles y se elige la que tiene el
     rango completo coherente con el precio actual; si ninguna lo es, NO se
     refina (mejor datos retrasados que datos inventados).
+
+    precio_ref: el llamador DEBE pasar el precio real de la moneda. Si falta,
+    se busca en _estado["monedas"] (el refinado en vivo ya lo hace); sin
+    referencia fiable no se puede validar la escala.
     Devuelve (highs, lows, cierres, abres, vols_usd, fuente) o None.
     """
-    precio_ref = None
-    try:
-        # el precio actual se busca en la lista que se esta refinando (pasada por
-        # _estado["monedas"], ya rellena durante el ciclo) y, si no esta, se pide
-        # al propio exchange (Binance/OKX devuelven el ultimo cierre de la vela)
-        for mo in _estado.get("monedas", []):
-            if mo["simbolo"].upper() == simbolo.upper():
-                precio_ref = mo.get("precio")
-                break
-    except Exception:
-        precio_ref = None
+    if precio_ref is None:
+        try:
+            # el precio actual se busca en la lista que se esta refinando (pasada por
+            # _estado["monedas"], ya rellena durante el ciclo) y, si no esta, se pide
+            # al propio exchange (Binance/OKX devuelven el ultimo cierre de la vela)
+            for mo in _estado.get("monedas", []):
+                if mo["simbolo"].upper() == simbolo.upper():
+                    precio_ref = mo.get("precio")
+                    break
+        except Exception:
+            precio_ref = None
     candidatos = []
     k = _binance_klines(simbolo, "1h", n)
     if k and len(k) >= 50:
@@ -607,8 +614,9 @@ def refinar_con_okx(m):
     # PRIMER par que existe. Para monedas con contrato multiplexado (p.ej.
     # XRP-USDT-SWAP cotiza x500) las velas llegan en otra magnitud y el delta
     # del refinado inventaba hasta +39 puntos. Ahora solo se refina con la
-    # fuente cuyo rango completo es coherente con el precio real de CoinGecko.
-    ohlc = velas_ohlc_normalizadas(m["simbolo"])
+    # fuente cuyo rango completo es coherente con el precio real de CoinGecko,
+    # pasado explicitamente (antes dependia del orden interno de _estado).
+    ohlc = velas_ohlc_normalizadas(m["simbolo"], precio_ref=m.get("precio"))
     if not ohlc:
         return False
     highs, lows, cierres, abres, vols_usd, fuente = ohlc
@@ -631,18 +639,18 @@ def refinar_con_okx(m):
     # version anterior usaba el RSI 1h como si fuera 4h, inflando la correccion.
     # Se usa SIEMPRE el RSI 4h real (m["rsi4h"] en el lado del cribado) y solo
     # entra en el lado nuevo si existe; si falta, aporta 0 (no se duplica 1h).
-    def _bonus_4h(r4, r1h):
-        if r4 is None or (r1h is not None and abs(r4 - r1h) < 1e-9):
-            return 0
-        return 8 if r4 <= 30 else (-8 if r4 >= 70 else 0)
+    # FALLO CORREGIDO (muerto): el helper local _bonus_4h() ya no se llamaba
+    # nunca (se sustituyo por _bonus_4h_real con condicion "activo") pero seguia
+    # definido: una regla duplicada sin "activo" que invitaba a reutilizarla por
+    # error y volver a introducir el doble conteo. Eliminada.
     e4_new = _bonus_4h_real(r4_new, r_new, activo_new)
     # lado viejo del delta: los puntos exactos que el cribado SUMO/RESTO por RSI
     # (incluye los negativos: "_b_rsi" solo guarda el bono positivo) y por 4h.
     r_viejo = m.get("rsi")
     activo_viejo = bool(m.get("_activo", True))
     pts_rsi_viejo = _pts_rsi1h(r_viejo, activo_viejo)
-    delta = ((_pts_rsi1h(r_new, activo_new) + e4_new + _pts_macd1h(mh_new, r_new))
-             - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, r_viejo)))
+    delta = ((_pts_rsi1h(r_new, activo_new) + e4_new + _pts_macd1h(mh_new, r_new, activo_new))
+             - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, r_viejo, activo_viejo)))
     # re-aplica el tope anti doble conteo con los datos EN VIVO.
     # FALLO CORREGIDO (simetria del tope): la version anterior medía el bono
     # NUEVO sin la condicion "activo" ni el termino MACD, mientras el cribado
@@ -660,7 +668,7 @@ def refinar_con_okx(m):
     # delta devolvia hasta 20 pts recortados legalmente por el cribado.
     bono_caida_new = (b_rsi_new_pos + max(0, e4_new)
                       + m.get("_b_rango_dip", 0)
-                      + max(0, _pts_macd1h(mh_new, r_new) if activo_new else 0))
+                      + max(0, _pts_macd1h(mh_new, r_new, activo_new)))
     exceso_new = max(0, bono_caida_new - TOPE_BONO_CAIDA)
     delta += m.get("_exceso", 0) - exceso_new
     sop, res = sr_por_mechas(highs[-49:], lows[-49:], precio)
@@ -823,9 +831,21 @@ def _pts_rsi4h(r4, r1h=None):
     return bruto
 
 
-def _pts_macd1h(mh, r=None):
-    """Puntos que el cribado asigna al MACD horario (para corregirlos en vivo)."""
-    if mh is None:
+def _pts_macd1h(mh, r=None, activo=True):
+    """Puntos que el cribado asigna al MACD horario (para corregirlos en vivo).
+
+    FALLO CORREGIDO (inversion residual): sin la condicion 'movimiento real',
+    una serie LATERAL perfecta (zigzag de 0.01%) generaba un histograma MACD
+    diminuto pero estrictamente negativo y decreciente: -6 puntos -> nota 38 ->
+    VENTA en una moneda que no se mueve. Es el mismo artificio matematico del
+    RSI extremo que ya se filtro con 'activo': si no hay velas reales detras,
+    el momentum tampoco existe. Ademas el termino del MACD quedaba FUERA del
+    tope anti-doble-conteo cuando era negativo, asi que penalizaba dos veces
+    (una por el MACD y otra por la caida que ese MACD solo refleja). Con
+    'activo=False' aporta siempre 0 y las tres etapas (cribado, refinado en
+    vivo, confirmacion) quedan simetricas.
+    """
+    if mh is None or not activo:
         return 0
     h_act, h_ant = mh
     # FALLO CORREGIDO: las comparaciones eran estrictas (> y <), de modo que la
@@ -1480,7 +1500,15 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
             pass                     # cuchillo: el marcador no da bono de rango
         else:
             bono += 12 if (activo and alc) else 6
-    bono += 10 if (ch30 is not None and ch24 is not None and ch30 > 5 and ch24 < -3) else 0
+    b_dip_txt = 10 if (ch30 is not None and ch24 is not None and ch30 > 5 and ch24 < -3) else 0
+    bono += b_dip_txt
+    # FALLO CORREGIDO (texto coherente con los puntos): el cribado (_puntua_cribo)
+    # topa el bono "por caer" INCLUYENDO los puntos del MACD horario cuando hay
+    # movimiento real. Aqui faltaba ese termino, asi que la nota mostraba el aviso
+    # "bono limitado a +22 (-N pts)" con un N distinto del recorte REALMENTE
+    # aplicado: el usuario veia una explicacion que no cuadraba con la puntuacion.
+    # Ahora se replican exactamente los mismos componentes y condiciones.
+    bono += max(0, _pts_macd1h(mh, r, activo))
     exc = max(0, bono - TOPE_BONO_CAIDA)
     if exc:
         raz.append(f"⚖️ Sobreventa + rango bajo + dip cuentan la misma caída: "
@@ -1617,7 +1645,7 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     # Aqui faltaba ese termino, asi que "_exceso" guardado era menor que el
     # recorte real del cribado y al refinar en vivo el delta devolvia pts
     # fantasma (hasta 6). Ahora la formula es identica a la del cribado.
-    b_macd = _pts_macd1h(mh, r) if activo_cribado else 0
+    b_macd = _pts_macd1h(mh, r, activo_cribado)
     # FALLO CORREGIDO (espejo EXACTO del cribado): las dos formulas del tope
     # deben ser identicas termino a termino. Antes: (a) aqui no se aplicaba la
     # condicion "activo" al MACD mientras el cribado si, y (b) en el refinado en
@@ -1730,18 +1758,20 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
         e4 = _bonus_4h_real(r4h, r, activo)
         puntos += e4
     if sma24 and sma72:
-        if tendencia_alc:
-            puntos += 8
-        elif tendencia_baj:
-            puntos -= 6
-        if len(precios) >= 96:
+        # FALLO CORREGIDO (cruce fantasma en serie plana): el detector de cruces
+        # comparaba las medias de HOY contra las de hace 24h con <= y >=. En una
+        # serie LATERAL perfecta ambas medias son exactamente iguales, asi que el
+        # "cruce alcista" (+7) Y el "cruce bajista" (-6) se disparaban a la vez
+        # por puro redondeo: ruido convertido en senal. Un cruce solo es cruce si
+        # las medias estaban separadas ANTES; ademas exige movimiento real.
+        if len(precios) >= 96 and activo:
             s24a, s72a = sma(precios[:-24], 24), sma(precios[:-24], 72)
-            if s24a and s72a:
-                if s24a <= s72a and sma24 > sma72:
+            if s24a and s72a and abs(s24a - s72a) / precio > 1e-4:
+                if s24a < s72a and sma24 > sma72:
                     puntos += 7
-                elif s24a >= s72a and sma24 < sma72:
+                elif s24a > s72a and sma24 < sma72:
                     puntos -= 6
-    puntos += _pts_macd1h(mh, r)
+    puntos += _pts_macd1h(mh, r, activo)
     if len(precios) >= 60:
         prev = precios[:-24]
         hi_prev, lo_prev = max(prev), min(prev)
@@ -1794,7 +1824,7 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
     # max(0,b_rsi4) + b_rango + b_dip + MACD crudo). Antes no entraba el MACD y
     # el bono de 4h se contaba solo si era positivo: dos cuentas distintas del
     # mismo recorte -> deltas falsos al refinar con velas EN VIVO.
-    b_macd_cribo = _pts_macd1h(mh, r) if activo else 0
+    b_macd_cribo = _pts_macd1h(mh, r, activo)
     # FALLO CORREGIDO (espejo del tope): los componentes se topan SIEMPRE con
     # max(0, ...) igual que en 'analizar_moneda'/'_bonus_4h_real'. Antes el RSI
     # 4h usaba "b_rsi4_pos" y el MACD entraba CRUDO: con e4=-8 o MACD=-6 el bono
@@ -1919,11 +1949,24 @@ def confirmar_candidatas(max_n=16):
         ajuste = 0
         nota_extra = ""
 
-        # 0) INTRADÍA EN TIEMPO REAL (velas 1h de OKX, sin retraso).
+        # 0) INTRADÍA EN TIEMPO REAL (velas 1h, sin retraso).
         #    El cribado midió RSI 1h y MACD horario sobre el sparkline de CoinGecko,
         #    que llega con ~1h de retraso: si en la última hora hubo un giro
         #    (p. ej. un retroceso fuerte), aquí se re-mide y se corrige la nota.
-        cierres = None if m.get("okx_vivo") else velas_1h_okx(m["simbolo"])
+        # FALLO CORREGIDO (escala): "velas_1h_okx" devolvía el PRIMER par que
+        # existe, sin comprobar magnitudes. Se llamo aqui a
+        # "velas_ohlc_normalizadas", que elige la fuente coherente con el precio
+        # REAL de esta moneda (contratos multiplexados como XRP-USDT-SWAP cotizan
+        # x500: misma serie, otra escala -> RSI/MACD inventados). Ademas se pasa
+        # explicitamente el precio de referencia: antes la eleccion de fuente
+        # dependia del orden en _estado["monedas"] y podian quedar velas de una
+        # fuente distinta a la usada por 'refinar_con_okx' en la misma moneda
+        # (comparar manzanas con peras entre las dos etapas del ciclo).
+        if m.get("okx_vivo"):
+            cierres = None      # ya refinada EN VIVO: no se vuelve a corregir
+        else:
+            _oh = velas_ohlc_normalizadas(m["simbolo"], precio_ref=m.get("precio"))
+            cierres = _oh[2] if _oh else None
         if cierres:
             r_rt = rsi(cierres)
             mh_rt = macd_hist(cierres)
@@ -1935,8 +1978,20 @@ def confirmar_candidatas(max_n=16):
             # senal de un ciclo al siguiente. Ahora: si la nota ya esta refinada
             # EN VIVO (okx_vivo), NO se vuelve a corregir; solo se corrige cuando
             # el cribado sigue con los datos retrasados de CoinGecko.
-            delta_rt = ((_pts_rsi1h(r_rt) + _pts_macd1h(mh_rt, r_rt))
-                        - (_pts_rsi1h(m.get("rsi")) + _pts_macd1h(mh_old, m.get("rsi"))))
+            # FALLO CORREGIDO (inversion residual): las funciones _pts_rsi1h y
+            # _bonus_4h_real devuelven SIEMPRE 0 cuando no hay movimiento real,
+            # pero aqui se llamaban SIN pasar el flag "activo": una serie lateral
+            # re-medida con velas en vivo puntuaba como si fuera tendencia y el
+            # delta sumaba/restaba puntos que el cribado nunca concedio (la misma
+            # inversion que se corrigio en refinar_con_okx). Se evalua el
+            # movimiento real de las velas nuevas y se usa la MISMA regla en ambos
+            # lados del delta (el viejo sale de "_b_rsi"/"_b_rsi4", guardados por
+            # el cribado con su propio activo).
+            activo_rt = _movimiento_real(cierres)
+            pts_rsi_viejo = _pts_rsi1h(m.get("rsi"), bool(m.get("_activo", True)))
+            delta_rt = ((_pts_rsi1h(r_rt, activo_rt) + _bonus_4h_real(rsi(cierres[3::4]), r_rt, activo_rt)
+                         + _pts_macd1h(mh_rt, r_rt, activo_rt))
+                        - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, m.get("rsi"), bool(m.get("_activo", True)))))
             if m.get("okx_vivo"):
                 delta_rt = 0
             if mh_rt is not None and mh_rt[0] > 0 and mh_rt[0] >= mh_rt[1]:
