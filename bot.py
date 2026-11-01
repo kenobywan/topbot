@@ -1424,12 +1424,17 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
             raz.append("Tendencia alcista (precio > SMA24h > SMA72h)")
         elif precio < sma24 < sma72:
             raz.append("Tendencia bajista (precio < SMA24h < SMA72h)")
-        if len(precios) >= 96:
+        # El TEXTO debe seguir la MISMA condicion que los puntos en _puntua_cribo:
+        # cruce solo si hay movimiento real y las medias estaban separadas ANTES.
+        # Antes usaba <= / >= sin esas condiciones: una serie lateral perfecta
+        # mostraba a la vez "cruce alcista" y "cruce bajista" (ruido de
+        # redondeo) y el usuario leia una senal que el marcador no puntuaba.
+        if len(precios) >= 96 and activo:
             s24a, s72a = sma(precios[:-24], 24), sma(precios[:-24], 72)
-            if s24a and s72a:
-                if s24a <= s72a and sma24 > sma72:
+            if s24a and s72a and abs(s24a - s72a) / precio > 1e-4:
+                if s24a < s72a and sma24 > sma72:
                     raz.append("🚀 Cruce alcista de medias en las últimas 24h: la moneda está despertando")
-                elif s24a >= s72a and sma24 < sma72:
+                elif s24a > s72a and sma24 < sma72:
                     raz.append("Cruce bajista de medias en las últimas 24h")
     if mh is not None:
         h_act, h_ant = mh
@@ -1758,6 +1763,15 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
         e4 = _bonus_4h_real(r4h, r, activo)
         puntos += e4
     if sma24 and sma72:
+        # FALLO CORREGIDO (regla perdida): al reescribir el bloque del cruce de
+        # medias se borro la puntuacion de la TENDENCIA (precio > SMA24h > SMA72h
+        # sumaba +8; precio < SMA24h < SMA72h restaba -6). Sin ella el marcador
+        # quedaba ciego a la direccion del mercado: compraba suelos y techos por
+        # igual sin saber si la moneda estaba subiendo o cayendo. Restaurada.
+        if tendencia_alc:
+            puntos += 8
+        elif tendencia_baj:
+            puntos -= 6
         # FALLO CORREGIDO (cruce fantasma en serie plana): el detector de cruces
         # comparaba las medias de HOY contra las de hace 24h con <= y >=. En una
         # serie LATERAL perfecta ambas medias son exactamente iguales, asi que el

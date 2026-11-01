@@ -1,5 +1,5 @@
 {
- "actualizado": "2026-11-01T01:35:01.098205+00:00",
+ "actualizado": "2026-11-01T01:43:37.447797+00:00",
  "monedas": [
   {
    "id": "virtual-protocol",
@@ -98,7 +98,7 @@
      "dist": 2.93
     }
    ],
-   "funding": -0.002563,
+   "funding": -0.00271,
    "oi_usd": null,
    "long_short": null,
    "_activo": true,
@@ -236,7 +236,7 @@
     }
    ],
    "resistencias": [],
-   "funding": -0.003451,
+   "funding": -0.002754,
    "oi_usd": null,
    "long_short": null,
    "_activo": true,
@@ -402,7 +402,7 @@
      "dist": 17.91
     }
    ],
-   "funding": 0.001036,
+   "funding": 0.001331,
    "oi_usd": null,
    "long_short": null,
    "_activo": false,
@@ -443,7 +443,7 @@
     }
    ],
    "resistencias": [],
-   "funding": 0.007459,
+   "funding": 0.007543,
    "oi_usd": null,
    "long_short": null,
    "_activo": false,
@@ -478,7 +478,7 @@
    "ath_dist": -20.0,
    "soportes": [],
    "resistencias": [],
-   "funding": 0.00513,
+   "funding": 0.005178,
    "oi_usd": null,
    "long_short": null,
    "_activo": false,
@@ -519,7 +519,7 @@
     }
    ],
    "resistencias": [],
-   "funding": 0.0063620000000000005,
+   "funding": 0.006397,
    "oi_usd": null,
    "long_short": null,
    "_activo": false,
