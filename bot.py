@@ -1285,11 +1285,18 @@ def accion_sugerida(senal, precio, obj_c, obj_v):
 
 def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, ress,
                    ch3d, ch24, ch7d, ch30, ath_dist, vol_mcap, funding, long_short,
-                   btc_ch24, coin_id):
+                   btc_ch24, coin_id, activo=True):
     """Explica en texto los puntos que asigna _puntua_cribo (mismas condiciones)."""
     raz = []
     if r is not None:
-        if r <= 30:
+        # FALLO CORREGIDO (texto vs puntos): las razones llamaban "zona de
+        # compra/venta" a un RSI extremo aunque el marcador NO puntuara ese
+        # extremo por falta de movimiento real (serie lateral). El usuario veia
+        # "sobreventa fuerte → zona de compra" en una moneda que en realidad
+        # esta quieta. Ahora el texto usa la MISMA condicion que _pts_rsi1h.
+        if not activo and (r <= 30 or r >= 75):
+            raz.append(f"RSI {r:.0f} en serie casi plana: extremo artificioso, no es señal")
+        elif r <= 30:
             raz.append(f"RSI {r:.0f}: sobreventa fuerte → zona de compra")
         elif r <= 40:
             raz.append(f"RSI {r:.0f}: sobreventa moderada")
@@ -1300,7 +1307,9 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
         else:
             raz.append(f"RSI {r:.0f}: zona neutral")
     if r4h is not None and abs(r4h - (r or -99)) > 1e-9:
-        if r4h >= 70:
+        if not activo:
+            pass   # serie plana: el 4h tampoco es señal (igual que _bonus_4h_real)
+        elif r4h >= 70:
             raz.append(f"RSI 4h en {r4h:.0f}: sobrecompra en marco mayor")
         elif r4h <= 30:
             raz.append(f"RSI 4h en {r4h:.0f}: sobreventa en marco mayor")
@@ -1334,10 +1343,30 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
         elif precio < lo_p * 0.995 and comp < 0.12 and (ch24 or 0) < -1:
             raz.append("Ruptura bajista HOY del rango de varios días")
     if pos_rango is not None:
+        # el texto sigue la MISMA logica condicional que _puntua_cribo (antes
+        # describia "barato/compra" en suelos con tendencia bajista, justo lo
+        # que el marcador ya no premia desde la correccion de la inversion)
+        alc = bool(sma24 and sma72 and precio > sma24 > sma72)
+        baj = bool(sma24 and sma72 and precio < sma24 < sma72)
         if pos_rango <= 20:
-            raz.append(f"Precio en el {pos_rango:.0f}% inferior del rango 7d (barato)")
+            if baj or (mh is not None and mh[0] < 0):
+                raz.append(f"Precio en el {pos_rango:.0f}% inferior del rango 7d PERO con inercia "
+                           "bajista: cuchillo cayendo, no suelo confirmado")
+            elif activo and alc:
+                raz.append(f"Precio en el {pos_rango:.0f}% inferior del rango 7d: retroceso dentro "
+                           "de una tendencia alcista (dip comprable)")
+            else:
+                raz.append(f"Precio en el {pos_rango:.0f}% inferior del rango 7d (barato, lateral)")
         elif pos_rango >= 85:
-            raz.append(f"Precio en el {pos_rango:.0f}% del rango 7d (cerca del máximo)")
+            if alc and (mh is not None and mh[0] > 0):
+                raz.append(f"Precio rompiendo el máximo semanal ({pos_rango:.0f}%) con momentum: "
+                           "fortaleza, seguir la subida")
+            elif not activo:
+                raz.append(f"Precio en el {pos_rango:.0f}% del rango 7d de una serie casi plana: "
+                           "techo sin señal real de agotamiento")
+            else:
+                raz.append(f"Precio en el {pos_rango:.0f}% del rango 7d (cerca del máximo) con "
+                           "dinamica en contra: riesgo de techo")
         if pos_rango >= 85 and mh is not None and mh[0] < 0:
             raz.append("⛔ Contradicción alcista: precio pegado al máximo semanal pero "
                        "MACD negativo → alto riesgo de comprar el techo, mejor esperar retroceso")
@@ -1359,8 +1388,12 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
     p3, r3 = _pts_persecucion(ch3d, precios)
     if r3:
         raz.append(r3)
-    bono = max(0, _pts_rsi1h(r)) + max(0, _bonus_4h_real(r4h, r))
-    bono += 12 if (pos_rango is not None and pos_rango <= 20) else 0
+    bono = max(0, _pts_rsi1h(r, activo)) + max(0, _bonus_4h_real(r4h, r, activo))
+    if pos_rango is not None and pos_rango <= 20:
+        if baj or (mh is not None and mh[0] < 0):
+            pass                     # cuchillo: el marcador no da bono de rango
+        else:
+            bono += 12 if (activo and alc) else 6
     bono += 10 if (ch30 is not None and ch24 is not None and ch30 > 5 and ch24 < -3) else 0
     exc = max(0, bono - TOPE_BONO_CAIDA)
     if exc:
@@ -1430,6 +1463,14 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     if vol is not None and vol < 8:   # fondos tokenizados / renta fija
         es_stable = True
 
+    # FALLO CORREGIDO: "_activo" nunca se guardaba en el cribado, pero el
+    # refinado en vivo lo leia con default True al calcular el lado viejo del
+    # delta del RSI. Si la serie era lateral (RSI extremo artificioso,
+    # _activo=False), el refinado asumia que el cribado SI habia puntuado ese
+    # RSI y restaba puntos inexistentes: deltas falsos de hasta 20 pts que
+    # invertian la senal al refinar con velas EN VIVO. Ahora se guarda el
+    # valor real y el delta usa exactamente lo mismo que sumo el cribado.
+    activo_cribado = _movimiento_real(precios) if precios else False
     base = {
         "id": m["id"], "rank": m.get("market_cap_rank"), "simbolo": simbolo,
         "nombre": m["name"], "imagen": m.get("image"), "precio": precio,
@@ -1440,6 +1481,7 @@ def analizar_moneda(m, deriv, btc_ch24=None):
         "vol_mcap": vol_mcap, "ath_dist": ath_dist,
         "soportes": sops, "resistencias": ress,
         "funding": funding, "oi_usd": oi_usd, "long_short": long_short,
+        "_activo": activo_cribado,
     }
 
     if es_stable:
@@ -1460,15 +1502,33 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     razones = _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango,
                              sops, ress, ch3d, ch24, ch7d, ch30, ath_dist, vol_mcap,
                              funding, long_short, btc_ch24, m["id"])
-    b_rsi = max(0, _pts_rsi1h(r))
-    b_rsi4_pos = 8 if (r4h is not None and abs(r4h - (r or -99)) > 1e-9 and r4h <= 30) else 0
-    b_rango = 12 if (pos_rango is not None and pos_rango <= 20) else 0
+    # FALLO CORREGIDO (inversion residual): el bono "por caer" tenia DOS cuentas
+    # con componentes distintos. El cribado (_puntua_cribo) ya topa su bono a
+    # TOPE_BONO_CAIDA y entrega la nota recortada; aqui se recalculaban los
+    # mismos bonos aparte (b_rsi4 sin tope de "activo", b_rango fijo en 12) y se
+    # guardaba "_exceso" SIN restarlo de los puntos. Al refinar en vivo, delta
+    # sumaba "+m['_exceso']" devolviendo hasta 20 pts que el cribado jamas
+    # concedio: las monedas mas caidas SUBIAN de nota al pasar a EN VIVO (el
+    # marcador compraba navajas). Regla nueva: "_exceso" es exactamente lo que
+    # el cribado resto por el tope, medido con sus mismos terminos.
+    b_rsi = max(0, _pts_rsi1h(r, activo_cribado))
+    b_rsi4 = _bonus_4h_real(r4h, r, activo_cribado)
+    tendencia_alc_local = bool(sma24 and sma72 and precio > sma24 > sma72)
+    tendencia_baj_local = bool(sma24 and sma72 and precio < sma24 < sma72)
+    if pos_rango is not None and pos_rango <= 20:
+        if tendencia_baj_local or (mh is not None and mh[0] < 0):
+            b_rango = 0
+        elif activo_cribado and tendencia_alc_local:
+            b_rango = 12
+        else:
+            b_rango = 6
+    else:
+        b_rango = 0
     b_dip = 10 if (ch30 is not None and ch24 is not None and ch30 > 5 and ch24 < -3) else 0
-    bono_caida = b_rsi + b_rsi4_pos + b_rango + b_dip
+    bono_caida = b_rsi + max(0, b_rsi4) + b_rango + b_dip
     exceso_caida = max(0, bono_caida - TOPE_BONO_CAIDA)
     pts_sr = _pts_proximidad_sr(sops, ress)[0]
     pts_3d = _pts_persecucion(ch3d, precios)[0]
-    b_rsi4 = _bonus_4h_real(r4h, r)
 
     # --- factores que NO dependen solo del precio (no entran en el backtest) ---
     if funding is not None:
