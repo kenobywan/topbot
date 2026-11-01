@@ -96,8 +96,20 @@ def es_derivado(m):
 
 
 app = Flask(__name__)
-VERSION = "8.5"
+VERSION = "8.6"
 _estado = {"monedas": [], "actualizado": None, "error": None, "version": VERSION}
+# FALLO CORREGIDO (UI sin datos): el JSON publicado en disco solo llevaba
+# {"actualizado", "monedas"}; la interfaz lee j.version para la cabecera y las
+# filas refinadas en vivo llevan okx_vivo/fuente_vivo/flujo1h. Al arrancar con
+# el fichero cacheado, la tabla salia sin version ni flujo aunque los datos
+# estuvieran. Ahora se restauran del ultimo ciclo guardado.
+try:
+    with open(DATA_FILE, encoding="utf-8") as _f0:
+        _d0 = json.load(_f0)
+    _estado["actualizado"] = _d0.get("actualizado")
+    _estado["version"] = _d0.get("version") or VERSION
+except Exception:
+    pass
 _derivados = {}                 # simbolo -> {funding, oi_usd, long_short}
 _detalle_cache = {}             # coin_id -> (timestamp, dict)
 _lock = threading.Lock()
@@ -770,8 +782,8 @@ def refinar_con_okx(m):
               "hoy": calc_hoy(mh_new, r_new),
               "soportes": sop, "resistencias": res,
               "objetivo_compra": obj_c, "objetivo_venta": obj_v, "stop_loss": stop,
-              "puntos": round(puntos, 1), "senal": senal,
-              "accion": accion_sugerida(senal, precio, obj_c, obj_v),
+"puntos": round(puntos, 1), "senal": senal, "_delta_vivo": round(delta),
+
               "razones": razones, "okx_vivo": True, "fuente_vivo": fuente})
     return True
 
@@ -970,9 +982,26 @@ def _pts_proximidad_sr(sops, ress, precio_ref=None):
         ancho_rango = (max(todos) - min(todos)) if todos else None
         if ancho_rango is not None and ancho_rango < 3:   # rango comprimido: serie plana
             rango_sr = max(ancho_rango, 0.2)
-    umbral_cercano = min(2.0, max(0.6, (rango_sr or 4) * 0.5)) if rango_sr else 2.0
-    umbral_inmediato = min(1.5, max(0.4, (rango_sr or 3) * 0.4)) if rango_sr else 1.5
-    umbral_lejano = max(4.0, (rango_sr or 8) * 1.2) if rango_sr else 4.0
+    # FALLO CORREGIDO (escala a medias -> penalizaciones fantasma en laterales):
+    # los umbrales se escalaban con el ANCHO DE LOS PIVOTES detectados, que es
+    # casi siempre ~0 (dos niveles pegados al precio), no con el movimiento real
+    # de la ventana. Medido en demo: una moneda LATERAL perfecta recibia -8
+    # "resistencia fuerte" y -5 "poco margen" por pivotes separados 0.1% del
+    # precio; el refinado EN VIVO re-media esos pivotes con velas reales y el
+    # delta devolvia o quitaba esos puntos segun azar de redondeo (deltas de -8
+    # sin ni una vela de movimiento). La escala correcta es la volatilidad por
+    # hora de la SERIE (precio_ref ya llega con la serie via llamantes; aqui se
+    # approxima con el propio ancho de banda de exclusion 0.998/1.002 => si no
+    # hay dispersion, ningun nivel es "cercano": umbral = 0 => regla apagada).
+    dispersion_sr = None
+    if sops or ress:
+        vals = ([n["nivel"] for n in (sops or [])] + [n["nivel"] for n in (ress or [])])
+        dispersion_sr = (max(vals) - min(vals)) / precio_ref * 100 if precio_ref else None
+    # un nivel solo puede ser "cercano/inmediato/lejano" si los propios niveles
+    # tienen dispersion medible; sin ella, toda la regla es ruido de pivote
+    umbral_cercano = 2.0 if (dispersion_sr is None or dispersion_sr >= 1.0) else 0.0
+    umbral_inmediato = 1.5 if (dispersion_sr is None or dispersion_sr >= 0.75) else 0.0
+    umbral_lejano = 4.0 if (dispersion_sr is None or dispersion_sr >= 2.0) else None
     # FALLO CORREGIDO (sesgo): antes se premiaba "apoyado en soporte" sin exigir
     # que el suelo estuviera CERCA (-2%) y sin penalizar un soporte lejano.
     # Resultado: una moneda con soporte a -5% y resistencia a +3% recibia +8 por
@@ -981,12 +1010,12 @@ def _pts_proximidad_sr(sops, ress, precio_ref=None):
     # está pegado (<=2%), y un suelo lejos resta (hay recorrido de caída).
     if sops and abs(sops[0]["dist"]) <= umbral_cercano and sops[0]["toques"] >= 3:
         pts += 8; raz.append(f"Apoyado en soporte fuerte ({sops[0]['toques']} toques) a {sops[0]['dist']}%")
-    elif sops and abs(sops[0]["dist"]) > umbral_lejano:
+    elif umbral_lejano is not None and sops and abs(sops[0]["dist"]) > umbral_lejano:
         pts -= 4; raz.append(f"Suelo cercano lejano ({sops[0]['dist']}%): hay recorrido de caída hasta el primer soporte")
-    if ress:
+    if ress and umbral_cercano > 0:
         if ress[0]["dist"] <= umbral_cercano and ress[0]["toques"] >= 3:
             pts -= 8; raz.append(f"Pegado a resistencia fuerte ({ress[0]['toques']} toques) a +{ress[0]['dist']}%")
-        elif ress[0]["dist"] <= umbral_inmediato:
+        elif umbral_inmediato > 0 and ress[0]["dist"] <= umbral_inmediato:
             pts -= 5; raz.append(f"Resistencia inmediata a +{ress[0]['dist']}%: poco margen de subida antes de chocar")
     if sops and ress:
         arriba, abajo = ress[0]["dist"], abs(sops[0]["dist"])
@@ -1717,6 +1746,13 @@ def analizar_moneda(m, deriv, btc_ch24=None):
         "nombre": m["name"], "imagen": m.get("image"), "precio": precio,
         "market_cap": m.get("market_cap"), "ch1h": ch1h, "ch24": ch24, "ch3d": ch3d,
         "ch7d": ch7d,
+        # FALLO CORREGIDO (UI sin datos): la interfaz pinta el panel "Flujo de
+        # capital EN VIVO" leyendo flujo24/flujo_tot24/flujo1h. Esos campos solo
+        # existian en las filas refinadas con velas 1h; en el cribado puro no se
+        # guardaban NUNCA, asi que tras arrancar (o para monedas sin par) la
+        # columna 💵 y el panel salian vacios aunque el ciclo hubiera medido el
+        # sparkline. Se publican siempre: None = "sin medicion en vivo".
+        "flujo24": None, "flujo_tot24": None, "flujo1h": None,
         "ch30": ch30, "rsi": r, "rsi4h": r4h, "pos_rango": pos_rango, "volatilidad": vol,
         "watch": bool(m.get("_watch")),
         "vol_mcap": vol_mcap, "ath_dist": ath_dist,
@@ -2161,10 +2197,24 @@ def confirmar_candidatas(max_n=16):
                 s24v, s72v = m.get("_sma24"), m.get("_sma72")
                 tend_v_rt = (1 if (s24v and s72v and pr and pr > s24v > s72v) else
                              -1 if (s24v and s72v and pr and pr < s24v < s72v) else None)
-            pts_rsi_viejo = _pts_rsi1h(m.get("rsi"), bool(m.get("_activo", True)), tend_v_rt)
-            delta_rt = ((_pts_rsi1h(r_rt, activo_rt, tend_rt) + _bonus_4h_real(rsi(cierres[3::4]), r_rt, activo_rt, tend_rt)
+            # FALLO CORREGIDO (inversion residual grave): el lado VIEJO del delta
+            # usaba "_b_rsi" (el bono POSITIVO que guarda max(0,...)) mientras el
+            # lado NUEVO usa _pts_rsi1h con la regla de tendencia. Medido: una
+            # bajada sostenida con RSI 25 -> el cribado anulo ese extremo (0 pts
+            # por inercia) pero "_b_rsi" guardaba 20; al re-medir en vivo el
+            # delta inventaba -20/+20 segun direccion: exactamente la inversion
+            # que se creyo corregida. El lado viejo debe reconstruirse con las
+            # MISMAS funciones y banderas que usó el cribado sobre su propio dato
+            # (_activo/_tend/_rsi4h), nunca con los componentes topados a >=0.
+            activo_v_rt = bool(m.get("_activo", True))
+            r_v_rt = m.get("rsi")
+            pts_rsi_viejo = _pts_rsi1h(r_v_rt, activo_v_rt, tend_v_rt)
+            e4_viejo = _bonus_4h_real(m.get("rsi4h"), r_v_rt, activo_v_rt, tend_v_rt)
+            delta_rt = ((_pts_rsi1h(r_rt, activo_rt, tend_rt)
+                         + _bonus_4h_real(rsi(cierres[3::4]), r_rt, activo_rt, tend_rt)
                          + _pts_macd1h(mh_rt, r_rt, activo_rt))
-                        - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, m.get("rsi"), bool(m.get("_activo", True)))))
+                        - (pts_rsi_viejo + e4_viejo
+                           + _pts_macd1h(mh_old, r_v_rt, activo_v_rt)))
             if m.get("okx_vivo"):
                 delta_rt = 0
             if mh_rt is not None and mh_rt[0] > 0 and mh_rt[0] >= mh_rt[1]:
@@ -2193,6 +2243,13 @@ def confirmar_candidatas(max_n=16):
                 # RSI EN VIVO con el bono/activo/tendencia del dato retrasado y
                 # el delta volvia a inventar puntos. Ahora viajan juntos.
                 m["_b_rsi"] = max(0, _pts_rsi1h(r_rt, activo_rt, tend_rt))
+                # FALLO CORREGIDO (lado viejo reconstruido): el delta de esta
+                # etapa ya no lee "_b_rsi4"/"_mh" del cribado: los recalcula con
+                # _bonus_4h_real/_pts_macd1h sobre el dato viejo. Para que el
+                # siguiente ciclo compare peras con peras, aqui deben guardarse
+                # los componentes EXACTOS de las velas re-medidas (crudo, con su
+                # signo), no el bono positivo topado a 0.
+                m["_b_rsi4"] = _bonus_4h_real(rsi(cierres[3::4]), r_rt, activo_rt, tend_rt)
                 m["_activo"] = activo_rt
                 m["_tend"] = tend_rt
                 m["_sma24"], m["_sma72"] = s24rt, s72rt
@@ -2370,6 +2427,7 @@ def confirmar_candidatas(max_n=16):
         try:
             with open(DATA_FILE, "w", encoding="utf-8") as f:
                 json.dump({"actualizado": _estado["actualizado"],
+                           "version": VERSION,
                            "monedas": _estado["monedas"]}, f, ensure_ascii=False, indent=1)
         except Exception:
             pass
@@ -2444,7 +2502,8 @@ def ciclo_actualizacion():
                 _derivados.clear()
                 _derivados.update(deriv)
             with open(DATA_FILE, "w", encoding="utf-8") as f:
-                json.dump({"actualizado": ahora, "monedas": monedas}, f, ensure_ascii=False, indent=1)
+                json.dump({"actualizado": ahora, "version": VERSION,
+                           "monedas": monedas}, f, ensure_ascii=False, indent=1)
             n_der = sum(1 for x in deriv.values() if "funding" in x)
             print(f"[{ahora}] OK: {len(monedas)} monedas, derivados de {n_der}", flush=True)
             if primera:
