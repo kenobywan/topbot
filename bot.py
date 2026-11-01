@@ -634,7 +634,25 @@ def refinar_con_okx(m):
     # viejo se lee de "_b_rsi"/"_b_rsi4" (guardados por el cribado con su propio
     # activo), el nuevo se evalua con las velas reales.
     activo_new = _movimiento_real(cierres)
-    b_rsi_viejo = m.get("_b_rsi", max(0, _pts_rsi1h(m.get("rsi"))))
+    # tendencia EN VIVO (mismas SMAs que usa el cribado sobre las velas nuevas):
+    # necesaria para que _pts_rsi1h aplique la regla "extremo a favor de la
+    # tendencia = inercia, no señal" también en esta etapa.
+    sma24_new, sma72_new = sma(cierres, 24), sma(cierres, 72)
+    tend_new = (1 if (sma24_new and sma72_new and precio > sma24_new > sma72_new) else
+                -1 if (sma24_new and sma72_new and precio < sma24_new < sma72_new) else None)
+    # FALLO CORREGIDO (simetría del lado viejo): el fallback de "_b_rsi" llamaba
+    # a _pts_rsi1h SIN "activo" ni "tendencia": si el cribado no hubiera guardado
+    # ese campo, el refinado restaría un bono RSI que jamás se concedió (hasta
+    # 20 pts fantasma -> VENTA inventada). El default ahora reproduce las mismas
+    # condiciones del cribado con los datos viejos.
+    tend_viejo = m.get("_tend")
+    if tend_viejo is None:
+        s24v, s72v = m.get("_sma24"), m.get("_sma72")
+        pv = m.get("precio")
+        tend_viejo = (1 if (s24v and s72v and pv and pv > s24v > s72v) else
+                      -1 if (s24v and s72v and pv and pv < s24v < s72v) else None)
+    b_rsi_viejo = m.get("_b_rsi", max(0, _pts_rsi1h(m.get("rsi"),
+                                                    bool(m.get("_activo", True)), tend_viejo)))
     # FALLO CORREGIDO (doble conteo): el termino "_pts_rsi4h(r_new)" de la
     # version anterior usaba el RSI 1h como si fuera 4h, inflando la correccion.
     # Se usa SIEMPRE el RSI 4h real (m["rsi4h"] en el lado del cribado) y solo
@@ -648,16 +666,15 @@ def refinar_con_okx(m):
     # (incluye los negativos: "_b_rsi" solo guarda el bono positivo) y por 4h.
     r_viejo = m.get("rsi")
     activo_viejo = bool(m.get("_activo", True))
-    pts_rsi_viejo = _pts_rsi1h(r_viejo, activo_viejo)
-    # FALLO CORREGIDO (termino muerto): en la version anterior "e4_new" se
-    # calculaba pero NO entraba en el delta: el termino nuevo del RSI 4h estaba
-    # ausente mientras el viejo si se restaba ("_b_rsi4"). Resultado: cada vez
-    # que las velas EN VIVO movian el RSI 4h (p.ej. de 28 a 72), el refinado
-    # restaba 8 puntos fantasmas sin devolver nunca el bono/penalizacion nueva,
-    # sesgando toda la tabla hacia VENTA tras monedas rebotadas. Ahora ambos
-    # lados del delta llevan exactamente los mismos tres terminos.
-    delta = ((_pts_rsi1h(r_new, activo_new) + e4_new + _pts_macd1h(mh_new, r_new, activo_new))
-             - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, r_viejo, activo_viejo)))
+    # FALLO CORREGIDO (regla "tendencia" propagada): el cribado anula el extremo
+    # del RSI cuando coincide con la direccion de la tendencia (ver _pts_rsi1h),
+    # pero el refinado en vivo llamaba a esas funciones SIN pasar 'tendencia':
+    # una bajada sostenida volvia a sumar +20 "por comprar" al refinar con velas
+    # EN VIVO -> exactamente la inversion residual que se creyo corregida. Ahora
+    # ambos lados del delta usan la misma regla con su propia tendencia.
+    delta = ((_pts_rsi1h(r_new, activo_new, tend_new) + e4_new + _pts_macd1h(mh_new, r_new, activo_new))
+             - (_pts_rsi1h(r_viejo, activo_viejo, tend_viejo) + m.get("_b_rsi4", 0)
+                + _pts_macd1h(mh_old, r_viejo, activo_viejo)))
     # re-aplica el tope anti doble conteo con los datos EN VIVO.
     # FALLO CORREGIDO (simetria del tope): la version anterior medía el bono
     # NUEVO sin la condicion "activo" ni el termino MACD, mientras el cribado
@@ -666,7 +683,7 @@ def refinar_con_okx(m):
     # cribado habia recortado legalmente -> la moneda subia de nota en vivo y
     # el marcador volvia a comprar navajas. Ahora ambos lados del tope se
     # miden con las MISMAS funciones y condiciones del cribado.
-    b_rsi_new_pos = max(0, _pts_rsi1h(r_new, activo_new))
+    b_rsi_new_pos = max(0, _pts_rsi1h(r_new, activo_new, tend_new))
     # FALLO CORREGIDO (simetria exacta del tope): ahora ambos lados se miden con
     # la MISMA formula: componentes topados con max(0,...), MACD condicionado a
     # "activo" y termino rango+dip sin topar por separado. Antes el lado nuevo
@@ -737,6 +754,14 @@ def refinar_con_okx(m):
     m.update({"rsi": r_new, "rsi4h": r4_new, "_exceso": exceso_new, "_pts_sr": pts_sr_new,
               "ch3d": ch3d_new, "_pts_3d": pts3d_new, "_pts_libro": pts_libro_new,
               "_pts_flujo": pts_flujo_new,
+              # FALLO CORREGIDO (estado no sincronizado): el refinado cambiaba
+              # rsi/rsi4h/activo pero NO los campos auxiliares que el cribado
+              # guarda para calcular deltas. Si despues confirmacion u otro delta
+              # leian "_b_rsi"/"_b_rsi4" se mezclaba el RSI EN VIVO con un bono
+              # del dato retrasado (puntos fantasma de hasta 28). Ahora la nota
+              # refinada lleva sus propios componentes exactos.
+              "_b_rsi": b_rsi_new_pos, "_b_rsi4": e4_new, "_activo": activo_new,
+              "_tend": tend_new, "_sma24": sma24_new, "_sma72": sma72_new,
               "flujo24": round(flujo24), "flujo_tot24": round(flujo_tot24),
               "flujo1h": round(flujo1h),
               "_mh": list(mh_new) if mh_new else None,
@@ -846,26 +871,11 @@ def _bonus_4h_real(r4, r1h, activo=True):
     return 8 if r4 <= 30 else (-8 if r4 >= 70 else 0)
 
 
-def _pts_rsi4h(r4, r1h=None):
-    """
-    Puntos que el cribado asigna al RSI 4h (para corregirlos en vivo).
-
-    FALLO CORREGIDO: antes se llamaba a esta funcion pasando el RSI 1h cuando
-    no habia RSI 4h. Con RSI 1h <= 30 eso sumaba +8 EXTRA, de modo que la
-    misma sobreventa se comptaba DOS VECES (+20 del RSI 1h y +8 "del 4h") y,
-    al refinar con velas en vivo, el delta devolvia esos puntos fantasma a la
-    nota (sesgo alcista sistematico en monedas cayendo). Ahora, si falta el
-    RSI 4h, se evalua contra el RSI 1h pero SE DESCUENTAN los puntos que ese
-    RSI 1h ya aporta por su propia regla: el resultado neto nunca duplica.
-    """
-    if r4 is None:
-        return 0
-    bruto = 8 if r4 <= 30 else (-8 if r4 >= 70 else 0)
-    if r1h is not None and abs(r4 - r1h) < 1e-9:
-        # mismo numero medido dos veces: solo cuenta lo que excede a _pts_rsi1h
-        bruto -= _pts_rsi1h(r1h) if bruto > 0 else 0
-        bruto = max(0, bruto) if r4 <= 30 else min(0, bruto)
-    return bruto
+# FALLO CORREGIDO (helper muerto eliminado): _pts_rsi4h() ya no se llamaba
+# nunca desde que el refinado usa _bonus_4h_real (que exige 'activo' y compara
+# contra el RSI 1h real). Mantener una regla duplicada del RSI 4h SIN condicion
+# de movimiento real invitaba a reutilizarla por error y reintroducia el doble
+# conteo (+20 RSI 1h +8 "del 4h" sobre la misma sobreventa). Borrada.
 
 
 def _pts_macd1h(mh, r=None, activo=True):
@@ -1452,6 +1462,12 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
                    btc_ch24, coin_id, activo=True):
     """Explica en texto los puntos que asigna _puntua_cribo (mismas condiciones)."""
     raz = []
+    # tendencia de las medias (mismo criterio que _puntua_cribo): necesaria para
+    # que el TEXTO refleje la regla nueva de _pts_rsi1h (extremo del RSI a favor
+    # de la tendencia = inercia, no zona de compra/venta).
+    tend_txt = (1 if (sma24 and sma72 and precio and precio > sma24 > sma72) else
+                -1 if (sma24 and sma72 and precio and precio < sma24 < sma72) else None)
+    pts_r_viejo = _pts_rsi1h(r, activo, tend_txt)
     if r is not None:
         # FALLO CORREGIDO (texto vs puntos): las razones llamaban "zona de
         # compra/venta" a un RSI extremo aunque el marcador NO puntuara ese
@@ -1460,6 +1476,10 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
         # esta quieta. Ahora el texto usa la MISMA condicion que _pts_rsi1h.
         if not activo and (r <= 30 or r >= 75):
             raz.append(f"RSI {r:.0f} en serie casi plana: extremo artificioso, no es señal")
+        elif r <= 30 and pts_r_viejo == 0:
+            raz.append(f"RSI {r:.0f}: sobreventa EN PLENA BAJADA (inercia bajista, no es suelo)")
+        elif r >= 75 and pts_r_viejo == 0:
+            raz.append(f"RSI {r:.0f}: sobrecompra EN PLENA SUBIDA (fortaleza en curso, no es techo)")
         elif r <= 30:
             raz.append(f"RSI {r:.0f}: sobreventa fuerte → zona de compra")
         elif r <= 40:
@@ -1559,7 +1579,7 @@ def _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango, sops, r
     p3, r3 = _pts_persecucion(ch3d, precios)
     if r3:
         raz.append(r3)
-    bono = max(0, _pts_rsi1h(r, activo)) + max(0, _bonus_4h_real(r4h, r, activo))
+    bono = max(0, _pts_rsi1h(r, activo, tend_txt)) + max(0, _bonus_4h_real(r4h, r, activo))
     if pos_rango is not None and pos_rango <= 20:
         if baj or (mh is not None and mh[0] < 0):
             pass                     # cuchillo: el marcador no da bono de rango
@@ -1701,10 +1721,15 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     # concedio: las monedas mas caidas SUBIAN de nota al pasar a EN VIVO (el
     # marcador compraba navajas). Regla nueva: "_exceso" es exactamente lo que
     # el cribado resto por el tope, medido con sus mismos terminos.
-    b_rsi = max(0, _pts_rsi1h(r, activo_cribado))
-    b_rsi4 = _bonus_4h_real(r4h, r, activo_cribado)
     tendencia_alc_local = bool(sma24 and sma72 and precio > sma24 > sma72)
     tendencia_baj_local = bool(sma24 and sma72 and precio < sma24 < sma72)
+    tend_local = 1 if tendencia_alc_local else (-1 if tendencia_baj_local else None)
+    # FALLO CORREGIDO (regla "tendencia" propagada): _pts_rsi1h anula el extremo
+    # del RSI cuando coincide con la direccion de las medias; aqui falta pasarle
+    # 'tend_local' y el bono guardado en "_b_rsi" no cuadraba con lo que sumaba
+    # el cribado (_puntua_cribo si pasa la tendencia) -> deltas falsos al refinar.
+    b_rsi = max(0, _pts_rsi1h(r, activo_cribado, tend_local))
+    b_rsi4 = _bonus_4h_real(r4h, r, activo_cribado)
     if pos_rango is not None and pos_rango <= 20:
         if tendencia_baj_local or (mh is not None and mh[0] < 0):
             b_rango = 0
@@ -1786,6 +1811,7 @@ def analizar_moneda(m, deriv, btc_ch24=None):
                  "_mh": list(mh) if mh else None,
                  "_b_rsi": b_rsi, "_b_rsi4": b_rsi4, "_b_rango_dip": b_rango + b_dip,
                  "_exceso": exceso_caida, "_pts_sr": pts_sr,
+                 "_tend": tend_local, "_sma24": sma24, "_sma72": sma72,
                  "_pts_3d": pts_3d, "_pts_libro": 0, "_pts_flujo": 0,
                  "accion": accion_sugerida(senal, precio, obj_c, obj_v),
                  "objetivo_compra": obj_c, "objetivo_venta": obj_v, "stop_loss": stop})
@@ -1820,14 +1846,17 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
     activo = _movimiento_real(precios)
     tendencia_alc = bool(sma24 and sma72 and precio > sma24 > sma72)
     tendencia_baj = bool(sma24 and sma72 and precio < sma24 < sma72)
+    # +1/-1/None: la misma senal de tendencia que consume _pts_rsi1h (extremo del
+    # RSI a favor de la tendencia = inercia, no bono de sobreventa/compra).
+    tend = 1 if tendencia_alc else (-1 if tendencia_baj else None)
     vent = precios[-49:]
     sops, ress = soportes_resistencias(vent, ventana=2, precio_ref=precio)
     ch3d = ((precios[-1] / precios[-73] - 1) * 100) if len(precios) >= 73 and precios[-73] else None
 
     puntos = 50.0
-    b_rsi = max(0, _pts_rsi1h(r, activo))
+    b_rsi = max(0, _pts_rsi1h(r, activo, tend))
     b_rango = b_dip = 0
-    puntos += _pts_rsi1h(r, activo)
+    puntos += _pts_rsi1h(r, activo, tend)
     e4 = 0
     if r4h is not None and abs(r4h - (r or -99)) > 1e-9:
         e4 = _bonus_4h_real(r4h, r, activo)
@@ -2078,8 +2107,20 @@ def confirmar_candidatas(max_n=16):
             # lados del delta (el viejo sale de "_b_rsi"/"_b_rsi4", guardados por
             # el cribado con su propio activo).
             activo_rt = _movimiento_real(cierres)
-            pts_rsi_viejo = _pts_rsi1h(m.get("rsi"), bool(m.get("_activo", True)))
-            delta_rt = ((_pts_rsi1h(r_rt, activo_rt) + _bonus_4h_real(rsi(cierres[3::4]), r_rt, activo_rt)
+            # tendencia en ambos lados del delta (regla "tendencia" propagada,
+            # igual que en refinar_con_okx): sin ella, una bajada sostenida
+            # re-medida en vivo volvia a sumar +20 de sobreventa fantasma.
+            s24rt, s72rt = sma(cierres, 24), sma(cierres, 72)
+            pr = m.get("precio") or cierres[-1]
+            tend_rt = (1 if (s24rt and s72rt and pr > s24rt > s72rt) else
+                       -1 if (s24rt and s72rt and pr < s24rt < s72rt) else None)
+            tend_v_rt = m.get("_tend")
+            if tend_v_rt is None:
+                s24v, s72v = m.get("_sma24"), m.get("_sma72")
+                tend_v_rt = (1 if (s24v and s72v and pr and pr > s24v > s72v) else
+                             -1 if (s24v and s72v and pr and pr < s24v < s72v) else None)
+            pts_rsi_viejo = _pts_rsi1h(m.get("rsi"), bool(m.get("_activo", True)), tend_v_rt)
+            delta_rt = ((_pts_rsi1h(r_rt, activo_rt, tend_rt) + _bonus_4h_real(rsi(cierres[3::4]), r_rt, activo_rt)
                          + _pts_macd1h(mh_rt, r_rt, activo_rt))
                         - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, m.get("rsi"), bool(m.get("_activo", True)))))
             if m.get("okx_vivo"):
@@ -2104,6 +2145,15 @@ def confirmar_candidatas(max_n=16):
             with _lock:
                 if r_rt is not None:
                     m["rsi"] = r_rt
+                # FALLO CORREGIDO (estado no sincronizado): se actualizaba "rsi"
+                # pero NO los componentes auxiliares del delta ("_b_rsi",
+                # "_activo", "_tend"): en ciclos posteriores el refinado leia un
+                # RSI EN VIVO con el bono/activo/tendencia del dato retrasado y
+                # el delta volvia a inventar puntos. Ahora viajan juntos.
+                m["_b_rsi"] = max(0, _pts_rsi1h(r_rt, activo_rt, tend_rt))
+                m["_activo"] = activo_rt
+                m["_tend"] = tend_rt
+                m["_sma24"], m["_sma72"] = s24rt, s72rt
                 m["hoy"] = calc_hoy(mh_rt, r_rt)
                 m["_mh"] = list(mh_rt) if mh_rt else None
                 m["razones"] = [z for z in m["razones"] if not _es_bullet_intradia(z)]

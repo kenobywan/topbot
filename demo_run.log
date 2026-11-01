@@ -1,0 +1,6 @@
+⭐ WATCHLIST: ['virtual-protocol', 'raydium']
+=== CryptoBot v8.5 (avisa si un id de la WATCHLIST no existe) ===
+ * Serving Flask app 'bot'
+ * Debug mode: off
+Address already in use
+Port 8000 is in use by another program. Either identify and stop that program, or start the server with a different port.
