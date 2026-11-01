@@ -566,15 +566,21 @@ def refinar_con_okx(m):
     # lado viejo del delta: los puntos exactos que el cribado SUMO/RESTO por RSI
     # (incluye los negativos: "_b_rsi" solo guarda el bono positivo) y por 4h.
     r_viejo = m.get("rsi")
-    pts_rsi_viejo = _pts_rsi1h(r_viejo, bool(m.get("_activo", True)))
+    activo_viejo = bool(m.get("_activo", True))
+    pts_rsi_viejo = _pts_rsi1h(r_viejo, activo_viejo)
     delta = ((_pts_rsi1h(r_new, activo_new) + e4_new + _pts_macd1h(mh_new, r_new))
              - (pts_rsi_viejo + m.get("_b_rsi4", 0) + _pts_macd1h(mh_old, r_viejo)))
     # re-aplica el tope anti doble conteo con los datos EN VIVO.
-    # FALLO CORREGIDO: "_b_caida" no incluia el bono del RSI, asi que al refinar
-    # se devolvan hasta 20 pts que el cribado ya habia recortado. Ahora se
-    # recalcula el bono completo (RSI + 4h + rango + dip) con valores en vivo.
-    b_rsi_new = max(0, _pts_rsi1h(r_new)) + max(0, _bonus_4h(r4_new, r_new))
-    bono_caida_new = b_rsi_new + m.get("_b_rango_dip", 0)
+    # FALLO CORREGIDO (simetria del tope): la version anterior medía el bono
+    # NUEVO sin la condicion "activo" ni el termino MACD, mientras el cribado
+    # (_puntua_cribo) si los usa. Resultado: al refinar una serie lateral con
+    # velas en vivo, exceso_new era 0 y el delta DEVOLVIA hasta 20 pts que el
+    # cribado habia recortado legalmente -> la moneda subia de nota en vivo y
+    # el marcador volvia a comprar navajas. Ahora ambos lados del tope se
+    # miden con las MISMAS funciones y condiciones del cribado.
+    b_rsi_new_pos = max(0, _pts_rsi1h(r_new, activo_new))
+    bono_caida_new = (b_rsi_new_pos + max(0, e4_new)
+                      + m.get("_b_rango_dip", 0) + _pts_macd1h(mh_new, r_new))
     exceso_new = max(0, bono_caida_new - TOPE_BONO_CAIDA)
     delta += m.get("_exceso", 0) - exceso_new
     sop, res = sr_por_mechas(highs[-49:], lows[-49:], precio)
@@ -1501,7 +1507,8 @@ def analizar_moneda(m, deriv, btc_ch24=None):
                                         vol_mcap=vol_mcap)
     razones = _razones_cribo(precios, precio, r, r4h, sma24, sma72, mh, pos_rango,
                              sops, ress, ch3d, ch24, ch7d, ch30, ath_dist, vol_mcap,
-                             funding, long_short, btc_ch24, m["id"])
+                             funding, long_short, btc_ch24, m["id"],
+                             activo=activo_cribado)
     # FALLO CORREGIDO (inversion residual): el bono "por caer" tenia DOS cuentas
     # con componentes distintos. El cribado (_puntua_cribo) ya topa su bono a
     # TOPE_BONO_CAIDA y entrega la nota recortada; aqui se recalculaban los
@@ -1525,7 +1532,13 @@ def analizar_moneda(m, deriv, btc_ch24=None):
     else:
         b_rango = 0
     b_dip = 10 if (ch30 is not None and ch24 is not None and ch30 > 5 and ch24 < -3) else 0
-    bono_caida = b_rsi + max(0, b_rsi4) + b_rango + b_dip
+    # FALLO CORREGIDO (simetria exacta del tope): el cribado (_puntua_cribo)
+    # topa el bono "por caer" incluyendo TAMBIEN los puntos del MACD horario.
+    # Aqui faltaba ese termino, asi que "_exceso" guardado era menor que el
+    # recorte real del cribado y al refinar en vivo el delta devolvia pts
+    # fantasma (hasta 6). Ahora la formula es identica a la del cribado.
+    b_macd = _pts_macd1h(mh, r)
+    bono_caida = b_rsi + max(0, b_rsi4) + b_rango + b_dip + b_macd
     exceso_caida = max(0, bono_caida - TOPE_BONO_CAIDA)
     pts_sr = _pts_proximidad_sr(sops, ress)[0]
     pts_3d = _pts_persecucion(ch3d, precios)[0]
@@ -1707,10 +1720,15 @@ def _puntua_cribo(precios, precio_actual=None, ch24=None, ch7d=None, ch30=None,
 
 def _serie_horaria(simbolo, n=720):
     """Cierres horarios para el backtest (Binance primero, OKX de respaldo)."""
-    k = _binance_klines(simbolo, "1h", min(n, 1000))
-    if k and len(k) >= 100:
-        return [float(c[4]) for c in k]
-    v = velas_ohlc_okx(simbolo, min(n, 300))
+    # FALLO CORREGIDO: esta funcion llamaba a velas_ohlc_okx() directamente y
+    # hacia v[2] creyendo que era "la lista de cierres". Pero en la rama de
+    # respaldo OKX, si ademas se caia a Binance con datos raros, o al mezclar
+    # el contrato SWAP, llegaban estructuras distintas y el backtest petaba
+    # con TypeError ('>=' entre tuple e int) — es decir, NUNCA se pudo calibrar
+    # el marcador con datos reales. Ahora se reutiliza velas_ohlc_vivo(), que
+    # ya normaliza ambas fuentes y devuelve SIEMPRE (highs, lows, cierres,
+    # abres, vols, fuente); aqui solo nos interesan los cierres (indice 2).
+    v = velas_ohlc_vivo(simbolo, min(n, 1000))
     return v[2] if v else None
 
 
@@ -1736,10 +1754,14 @@ def backtest_senal(simbolos=("BTC", "ETH", "SOL"), horizonte=24, paso=24):
             salida[s] = {"error": "historico insuficiente"}
             continue
         registros = []
-        i = len(cierres) - horizonte
+        # FALLO CORREGIDO (IndexError): el primer punto del recorrido era
+        # i = len(cierres) - horizonte, y luego se leia cierres[i + horizonte]
+        # = cierres[len(cierres)] -> fuera de rango. El backtest petaba al
+        # primer paso con cualquier serie. Ahora empezamos una barra antes.
+        i = len(cierres) - horizonte - 1
         while i >= 200:
             ventana = cierres[i - 199:i + 1]
-            p = _puntua_cribo(ventana, cierres[i])
+            p, _sen = _puntua_cribo(ventana, cierres[i])
             ret = (cierres[i + horizonte] / cierres[i] - 1) * 100
             registros.append((p, ret))
             i -= paso
