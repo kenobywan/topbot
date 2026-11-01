@@ -537,8 +537,22 @@ def velas_ohlc_normalizadas(simbolo, n=300, precio_ref=None):
         except Exception:
             pass
     if precio_ref is None and candidatos:
-        # fallback: usa el ultimo cierre de la fuente mas liquida disponible
-        precio_ref = max((v[2][-1] for v in candidatos), default=None)
+        # FALLO CORREGIDO (refinado muerto en produccion): el fallback usaba
+        # max() del ultimo cierre de TODAS las fuentes. Cuando un exchange da
+        # precios obsoletos u otra escala (p.ej. BTC a 78k mientras CoinGecko
+        # marca 108k), ese max() se convertia en el precio de referencia y
+        # DESCARTABA tambien la fuente buena: 0/102 monedas refinadas en vivo
+        # con red real, aunque el demo (donde todo sale de la misma serie) no
+        # lo detectaba nunca. El fallback ahora es por fuente: cada candidata
+        # se valida contra SU PROPIO ultimo cierre (consistencia interna de
+        # escala) y se exige ademas que todas las fuentes coincidan entre si;
+        # si discrepan >2%, ninguna es fiable -> no se refina.
+        ultimos = [v[2][-1] for v in candidatos if v[2]]
+        if ultimos:
+            dispers = max(ultimos) / min(ultimos) if min(ultimos) > 0 else 9
+            if dispers > 1.02:
+                return None      # exchanges en desacuerdo: mejor no inventar
+            precio_ref = sum(ultimos) / len(ultimos)
     for v in candidatos:
         highs, lows, cierres = v[0], v[1], v[2]
         if not precio_ref:
@@ -552,8 +566,16 @@ def velas_ohlc_normalizadas(simbolo, n=300, precio_ref=None):
         # La coherencia de escala solo necesita el PRECIO REAL: si alguna vela
         # esta al menos 4x por encima del precio, es otro contrato (multiplexado)
         # o una escala distinta -> se descarta esa fuente.
+        # FALLO CORREGIDO (fuente obsoleta): ademas de la escala, se exige que
+        # EL PROPIO ultimo cierre de la fuente este fresco (<=5% del precio al
+        # que se va a comparar). Binance devolvia velas con BTC a 78k cuando el
+        # mercado real estaba a 108k: pasaban el filtro de escala (4x) y el
+        # refinado descartaba la fuente BUENA de OKX por el chequeo de coherencia
+        # de refinar_con_okx. Con precios desactualizados, lo correcto es usar
+        # la fuente cuya ultima vela coincida con el precio actual.
         mx, mn = max(highs), min(lows)
-        if mn <= precio_ref * 1.02 and mx >= precio_ref * 0.98 \
+        if abs(cierres[-1] / precio_ref - 1) <= 0.05 \
+                and mn <= precio_ref * 1.02 and mx >= precio_ref * 0.98 \
                 and mn > 0 and mx / mn < 5 and mx <= precio_ref * 4 \
                 and mn >= precio_ref / 4:
             return v
