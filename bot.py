@@ -117,9 +117,16 @@ _lock = threading.Lock()
 
 def http_json(url, timeout=25):
     if DEMO_MODE:
+        # EN DEMO NUNCA se toca la red: si el generador sintetico no cubre esta
+        # URL, se devuelve None y la funcion llamadora lo trata como "fuente no
+        # disponible" (igual que un fallo real de API). Antes, al devolver None,
+        # la llamada caia a urllib y el modo demo consultaba Binance/OKX de
+        # verdad: los logs decian "Derivados: Binance (10 pares)" y las velas en
+        # vivo dependian del acceso a internet, invalidando la auditoria offline.
         d = _demo_http_json(url)
-        if d is not None:
-            return d
+        if d is None:
+            raise urllib.error.URLError(f"demo: sin datos sinteticos para {url[:80]}")
+        return d
     req = urllib.request.Request(url, headers={"User-Agent": "CryptoBot/2.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode())
@@ -210,6 +217,43 @@ def _demo_klines(url):
     if not row:
         return None
     serie = _serie_sintetica(_DEMO_PERFIL.get(row[0], "ruido"), n=1000)
+    # FALLO CORREGIDO (demo sin red que nunca ejercitaba el refinado): las velas
+    # se escalaban con la base FIJA del catalogo, pero el sparkline lo genera
+    # _demo_markets_row con SU propia escala y sobre 168 velas; al ser series
+    # distintas, el chequeo de coherencia de velas_ohlc_normalizadas descartaba
+    # SIEMPRE las velas ("Velas EN VIVO aplicadas a 0 monedas" cada ciclo),
+    # dejando mechas/S/R/libro/flujo sin probar offline. Solucion: replicar la
+    # construccion EXACTA de _demo_markets_row (misma serie de 168, misma
+    # escala) y extenderla hacia atras con el mismo generador determinista, de
+    # modo que la ventana final coincida punto a punto con el sparkline.
+    fila_ref = _demo_markets_row(*row)
+    base_serie = list(fila_ref["sparkline_in_7d"]["price"])   # 168 velas == sparkline
+    perfil = _DEMO_PERFIL.get(row[0], "ruido")
+    rnd_r = random.Random(42 + len(perfil))
+    # FALLO CORREGIDO (refinado muerto en el demo): el pad historico se generaba
+    # como paseo aleatorio de 832 velas sin anclarlo al precio final; con deriva
+    # acumulada el maximo quedaba 50x sobre el precio y el filtro de coherencia
+    # de velas_ohlc_normalizadas descartaba la fuente -> "Velas EN VIVO aplicadas
+    # a 0 monedas" cada ciclo, dejando mechas/S/R/libro/flujo sin probar offline.
+    # El pad ahora tiene derive CONTRARIA al perfil (una subida viene de abajo)
+    # y decae exponencialmente, de modo que el retroceso total queda acotado
+    # (~3x) dentro de la tolerancia del filtro, y engancha exactamente en el
+    # primer punto del sparkline.
+    paso_pad = {"bajada": 0.35, "subida": -0.35, "v-shape": -0.5,
+                "caida-reciente": -0.3}.get(perfil)          # None => lateral/ruido
+    n_pad = 1000 - len(base_serie)
+    pad, q = [], base_serie[0]
+    for j in range(n_pad):
+        if paso_pad is not None:
+            pp = paso_pad * math.exp(-j / 160.0)  # derive decreciente hacia atras
+        elif perfil == "lateral":
+            pp = rnd_r.uniform(-0.02, 0.02)
+        else:
+            pp = rnd_r.gauss(0.0, 0.45) * math.exp(-j / 160.0)
+        q *= (1 + pp / 100.0)                     # retrocedemos un paso
+        pad.append(q)
+    pad = pad[::-1]                               # antiguo -> reciente
+    serie_p = pad + base_serie                    # 1000 velas, cola == sparkline
     # FALLO CORREGIDO (demo sin mechas ni volumen): las velas se generaban con
     # h=l=max(o,cierre)*1.002 y v=0, de modo que sr_por_mechas() no encontraba
     # NINGUN pivote (todos los extremos coincidian) y el flujo de capital salia
@@ -218,9 +262,8 @@ def _demo_klines(url):
     # Ahora cada vela tiene mecha alta/baja y volumen USD deterministas.
     rnd_v = random.Random(7 + len(sim))
     out = []
-    for i, c in enumerate(serie):
-        px = c * escala
-        o = serie[i - 1] * escala if i else px
+    for i, px in enumerate(serie_p):
+        o = serie_p[i - 1] if i else px
         cuerpo_alto, cuerpo_bajo = max(o, px), min(o, px)
         h = cuerpo_alto * (1 + abs(rnd_v.gauss(0, 0.003)) + 0.0005)
         l = cuerpo_bajo * (1 - abs(rnd_v.gauss(0, 0.003)) - 0.0005)
@@ -232,6 +275,33 @@ def _demo_klines(url):
     return out
 
 
+def _demo_derivados(url):
+    """premiumIndex de Binance futures: funding y markPrice sinteticos por par.
+    FALLO CORREGIDO (demo que usaba red real): sin este caso, http_json caia a
+    urllib y el 'modo offline' consultaba Binance de verdad. Ahora la respuesta
+    es determinista: funding alternando positivo/neguno/cero segun el simbolo."""
+    tabla = {"BTC": 0.012, "ETH": -0.008, "SOL": 0.031, "XRP": 0.055,
+             "ADA": -0.004, "DOGE": 0.0, "AVAX": -0.061, "LINK": 0.009,
+             "VIRTUAL": 0.0, "RAY": -0.02}
+    precio = {r[1].upper(): r[4] for r in _DEMO_MONEDAS}
+    if "open-interest" in url:                    # OI global de OKX (una sola llamada)
+        return {"data": [{"instId": f"{s}-USDT-SWAP",
+                          "oiUsd": f"{precio[s] * 4e7:.0f}"} for s in tabla if s in precio]}
+    if "funding-rate" in url:                     # funding por instrumento en OKX
+        m = re.search(r"instId=([A-Z]+)-USDT-SWAP", url)
+        sym = m.group(1) if m else None
+        if sym in tabla:
+            return {"data": [{"fundingRate": f"{tabla[sym]/100:.8f}"}]}
+        return {"data": []}
+    fila = []
+    for sym, f in tabla.items():
+        if sym not in precio:
+            continue
+        fila.append({"symbol": f"{sym}USDT", "lastFundingRate": f"{f/100:.8f}",
+                     "markPrice": f"{precio[sym]:.8f}"})
+    return fila
+
+
 def _demo_http_json(url):
     if "api.coingecko.com/api/v3/coins/markets" in url:
         ids = None
@@ -241,6 +311,9 @@ def _demo_http_json(url):
         filas = [_demo_markets_row(*row) for row in _DEMO_MONEDAS
                  if (ids is None or row[0] in ids)]
         return filas
+    if ("fapi.binance.com" in url and "premiumIndex" in url) \
+            or "open-interest" in url or "funding-rate" in url:
+        return _demo_derivados(url)
     if "binance.com" in url or "okx.com" in url:
         kl = _demo_klines(url)
         if kl is not None:
@@ -785,7 +858,13 @@ def refinar_con_okx(m):
     razones = [z for z in m["razones"] if not _es_bullet_intradia(z)
                and not _es_bullet_sr(z) and not z.startswith("⚖️")
                and not z.startswith("🏃") and not z.startswith("🧲")
-               and not z.startswith("💰") and not z.startswith("💸")]
+               and not z.startswith("💰") and not z.startswith("💸")
+               # FALLO CORREGIDO (bullet huero en confirmacion): el filtro de
+               # arriba eliminaba el bullet 📡 del refinado en vivo pero nadie
+               # lo reinsertaba (el desc nuevo solo menciona RSI/MACD), dejando
+               # la lista SIN ninguna evidencia de que los numeros son en vivo.
+               # El bullet completo con fuente se reconstruye mas abajo.
+               and not z.startswith("📡")]
     razones += raz_sr_new
     if raz3d_new:
         razones.append(raz3d_new)
@@ -795,7 +874,9 @@ def refinar_con_okx(m):
         razones.append(raz_flujo_new)
     if exceso_new:
         razones.insert(0, f"⚖️ Sobreventa + rango bajo + dip cuentan la misma caída: "
-                          f"bono limitado a +22 ({-exceso_new} pts)")
+                          f"bono limitado a +{TOPE_BONO_CAIDA:.0f} ({-exceso_new} pts)")
+    if fuente != "CoinGecko":
+        desc += f" — medido sobre velas 1h EN VIVO de {fuente}"
     razones.insert(0, desc)
     m.update({"rsi": r_new, "rsi4h": r4_new, "_exceso": exceso_new, "_pts_sr": pts_sr_new,
               "ch3d": ch3d_new, "_pts_3d": pts3d_new, "_pts_libro": pts_libro_new,
@@ -2295,8 +2376,16 @@ def confirmar_candidatas(max_n=16):
                 m["_sma24"], m["_sma72"] = s24rt, s72rt
                 m["hoy"] = calc_hoy(mh_rt, r_rt)
                 m["_mh"] = list(mh_rt) if mh_rt else None
-                m["razones"] = [z for z in m["razones"] if not _es_bullet_intradia(z)]
-                m["razones"].insert(0, bullet)
+                # FALLO CORREGIDO (bullet duplicado): en las monedas refinadas
+                # EN VIVO por refinar_con_okx, el bullet de intradia ya era el
+                # "📡 Intradía en tiempo real…" y esta linea lo borraba para
+                # volver a insertar el propio -> dos bullets 📡 al refrescar.
+                # Ahora se quita el anterior pero NO se inserta otro si el que
+                # queda es ya un 📡 (confirmar_candidatas no re-mide MACD/RSI).
+                _raz_nuevas = [z for z in m["razones"] if not _es_bullet_intradia(z)]
+                if not any(z.startswith("📡") for z in _raz_nuevas):
+                    _raz_nuevas.insert(0, bullet)
+                m["razones"] = _raz_nuevas
             # S/R de 24h re-medidos con las velas EN VIVO (solo si OKX cotiza
             # prácticamente igual que CoinGecko, para no mezclar escalas)
             if abs(cierres[-1] / m["precio"] - 1) < 0.02:
