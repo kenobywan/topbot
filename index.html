@@ -114,6 +114,7 @@
       <th data-k="funding" title="Funding rate del swap perpetuo (OKX)">Funding</th>
       <th data-k="long_short" title="Ratio cuentas long/short (OKX)">L/S</th>
       <th data-k="hoy" title="Timing intradía: ¿el momentum de hoy acompaña para ejecutar la señal? (MACD 1h + RSI 1h)">Hoy</th>
+      <th data-k="_tend" title="Tendencia del marco horario: precio vs SMA24h vs SMA72h. 🟢 alcista · 🔴 bajista · ⚪ lateral. Un extremo del RSI A FAVOR de la tendencia es inercia, no señal">Tend.</th>
       <th data-k="puntos" title="Puntuación 0-100 con horizonte de 24 horas (¿compro o vendo HOY?)">Nota 24h</th><th>Señal</th>
     </tr></thead>
     <tbody id="cuerpo"></tbody>
@@ -137,6 +138,7 @@ const fmtF = f => f==null?'<span class="neut">—</span>'
   :`<span class="${f>=0.03?'rojo':(f<0?'verde':'neut')}">${f.toFixed(3)}%</span>`;
 const fmtLS = ls => ls==null?'<span class="neut">—</span>'
   :`<span class="${ls>=3?'rojo':(ls<=0.7?'verde':'neut')}">${ls.toFixed(2)}</span>`;
+const fmtT = v => v==null?'—':(typeof v==='number'?(v>0?'📈 alcista':(v<0?'📉 bajista':'➡️ lateral')):String(v).toLowerCase());
 const claseB = s=>({'COMPRA FUERTE':'b-cf','COMPRA':'b-c','MANTENER':'b-m','VENTA':'b-v','VENTA FUERTE':'b-vf','STABLE':'b-s'}[s]||'b-m');
 const colorScore = p => p>=68?'var(--green)':p>=58?'#86efac':p<=32?'var(--red)':p<=42?'#fca5a5':'#b9c2d8';
 
@@ -169,6 +171,7 @@ function render(){
       <img src="${m.imagen}" onerror="this.style.visibility='hidden'">
       <div><div class="nom">${m.nombre}</div><div class="sim">${m.simbolo} · ${fmtP(m.precio)}</div>
       ${m.confirmada?`<div class="mini">✔ Confirmada 30d${m.tendencia_d?' · '+m.tendencia_d.toLowerCase():''}</div>`:'<div class="mini neut">⏳ pendiente de confirmación 30d</div>'}
+      <div class="mini" title="Tendencia del marco horario (precio vs SMA24h/SMA72h)">Tendencia 1h: ${fmtT(m._tend)}${m._activo===false?' · 〰️ serie casi plana (RSI/MACD extremos ignorados)':''}</div>
       ${m.accion?`<div class="mini" style="color:${m.accion.startsWith('✅')?'var(--green)':'var(--amber)'}">${m.accion}</div>`:''}</div>
       <div class="der"><div class="score" style="color:${colorScore(m.puntos)}">${m.puntos}</div>
       <span class="badge ${claseB(m.senal)}">${m.senal}</span></div></div>`;
@@ -197,10 +200,11 @@ function render(){
       <td>${fmtF(m.funding)}</td>
       <td>${fmtLS(m.long_short)}</td>
       <td title="${m.hoy==='favorable'?'El intradía acompaña hoy':(m.hoy==='desfavorable'?'El intradía va en contra hoy: mejor esperar':'Intradía neutro')}">${m.hoy==='favorable'?'🟢':(m.hoy==='desfavorable'?'🔴':'⚪')}</td>
+      <td title="${m._tend===1?'SMA24h > SMA72h y precio por encima: tendencia alcista':(m._tend===-1?'SMA24h < SMA72h y precio por debajo: tendencia bajista':'Medias sin dirección clara: lateral')}">${m._tend===1?'📈':(m._tend===-1?'📉':'➡️')}${m._activo===false?' <span title="Serie casi plana: los extremos de RSI/MACD son artificio matemático y el marcador los ignora" style="color:var(--amber)">〰️</span>':''}</td>
       <td style="color:${colorScore(m.puntos)};font-weight:700">${m.puntos}</td>
       <td><span class="badge ${claseB(m.senal)}">${m.senal}</span></td>
     </tr>
-    <tr class="detalle" id="d-${m.id}"><td colspan="15">${abierto===m.id?htmlDetalle(m):''}</td></tr>`).join('');
+    <tr class="detalle" id="d-${m.id}"><td colspan="16">${abierto===m.id?htmlDetalle(m):''}</td></tr>`).join('');
   if(abierto){ const d=document.getElementById('d-'+abierto); if(d){ d.style.display='table-row'; cargarProfundo(abierto); } }
 }
 
@@ -235,6 +239,18 @@ function htmlDetalle(m){
         <span class="sr-precio">${fmtP(m.precio)}</span><span class="sr-barra"></span><span class="sr-dist"></span></div>
       ${(m.soportes||[]).map(n=>filaSR(n,'S',m.precio)).join('')}
       ${!(m.soportes||[]).length&&!(m.resistencias||[]).length?'<div class="mini">Sin pivotes claros en las últimas 48h.</div>':''}
+    </div>
+    <h4 class="sec">Desglose del marcador (mismas reglas que usa la nota)</h4>
+    <div class="niveles" style="margin-bottom:8px">
+      <div class="nivel" title="Bono de sobreventa (+) o penalización de sobrecompra (−) del RSI 1h. Con tendencia a favor el extremo es inercia: 0 pts">RSI 1h<b>${(m._b_rsi||0)>0?'+'+(m._b_rsi||0):(m._b_rsi||0)}</b></div>
+      <div class="nivel" title="Bono extra si el RSI 4h está en extremo CONTRA la tendencia (marco mayor). A favor: 0 pts">RSI 4h<b>${(m._b_rsi4||0)>0?'+'+(m._b_rsi4||0):(m._b_rsi4||0)}</b></div>
+      <div class="nivel" title="Bonos «por caer» (sobreventa + rango bajo + dip) cuentan la misma caída: suman como mucho +22; esto es lo que se recortó">Tope anti-caída<b class="${(m._exceso||0)>0?'ambar':''}">${(m._exceso||0)>0?('−'+m._exceso+' pts'):'sin recorte'}</b></div>
+      <div class="nivel" title="Puntos por cercanía a soportes/resistencias fuertes de 48h">Cercanía S/R<b>${(m._pts_sr||0)>0?'+'+(m._pts_sr||0):(m._pts_sr||0)}</b></div>
+      <div class="nivel" title="Penalización por perseguir una subida reciente (anti-FOMO a 3 días)">Anti-persecución<b>${(m._pts_3d||0)||0}</b></div>
+      <div class="nivel" title="Empuje/freno inmediato del micro-marco 15m y libro de órdenes (solo con velas EN VIVO)">Libro 15m<b>${(m._pts_libro||0)>0?'+'+(m._pts_libro||0):(m._pts_libro||0)||'—'}</b></div>
+      <div class="nivel" title="Capital neto 24h de las velas 1h EN VIVO: entra (+) o sale (−) dinero">Flujo 💰<b>${(m._pts_flujo||0)>0?'+'+(m._pts_flujo||0):(m._pts_flujo||0)||'—'}</b></div>
+      <div class="nivel" title="¿Hay movimiento real por hora? Sin él, los RSI pegados a 0/100 son artificio de una serie plana y no puntúan">Movimiento real<b class="${m._activo===false?'ambar':''}">${m._activo===false?'✕ serie plana':'✓'}</b></div>
+          <div class="nivel" title="Corrección aplicada al refinar con velas 1h EN VIVO sobre el sparkline retrasado de CoinGecko">Ajuste 📡<b>${m._delta_vivo!=null&&m._delta_vivo!==0?((m._delta_vivo>0?'+':'')+m._delta_vivo+' pts'):(m.okx_vivo?'0 (ya afinado)':'— sin refinar')}</b></div>
     </div>
     <div class="niveles">
       <div class="nivel">🎯 Zona de compra<b class="verde">${m.objetivo_compra?fmtP(m.objetivo_compra):'— sin soporte cercano'}</b></div>
